@@ -1,0 +1,29 @@
+// 예시 파일 만들기: node scripts/make-samples.js
+// samples/ 에 예시 엑셀·PDF·메일(.eml) 을 만듭니다. 모두 지어낸 예시 데이터입니다.
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const XLSX = require('../vendor/xlsx.full.min.js');
+const L = require('../js/logic.js');
+const S = require('../js/sample-data.js');
+
+const OUT = path.join(__dirname, '..', 'samples');
+const BASE = '2026-09-28'; // 예시 대장·메일 날짜의 기준일
+fs.mkdirSync(OUT, { recursive: true });
+
+function xlsx(name, sheets) {
+  const wb = XLSX.utils.book_new();
+  Object.keys(sheets).forEach(n => XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sheets[n]), n));
+  fs.writeFileSync(path.join(OUT, name), XLSX.write(wb, { bookType: 'xlsx', type: 'buffer' }));
+}
+xlsx('예시데이터_ContactList.xlsx', { 'Contact List': S.contactRows });
+xlsx('예시데이터_Weekly_Order_Status_이전주차.xlsx', { 'Order Status': S.weeklyOld });
+xlsx('예시데이터_Weekly_Order_Status_이번주차.xlsx', { 'Order Status': S.weeklyNew });
+xlsx('예시데이터_PackingList.xlsx', { 'Packing List': S.packingRows });
+const db = L.emptyDb();
+db.suppliers = L.importSuppliers(L.applyMapping(S.contactRows, L.guessMapping(Object.keys(S.contactRows[0]), 'supplier'))).suppliers;
+db.pos = S.ledger(BASE).map(p => L.cleanPo(p, db.suppliers));
+xlsx('예시데이터_관리대장.xlsx', { '관리대장': L.ledgerRows(db, BASE) });
+S.poPdfs.forEach(p => fs.writeFileSync(path.join(OUT, p.name), L.makeSimplePdf(p.lines)));
+S.mails(BASE).forEach(m => fs.writeFileSync(path.join(OUT, m.name), m.text));
+console.log(fs.readdirSync(OUT).join('\n'));
