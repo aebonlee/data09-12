@@ -227,9 +227,45 @@
 
   poPdfs.push({ name: '예시데이터_PO_M261110501.pdf', lines: realPoLines });
 
+  /* ── 「wk38 분석E」 시트 형식 예시(2026-09-29 메일 추가 요청 2) ───────────────
+     실물처럼 1행 제목·2행 머리글, 노란 줄(EXW 변경 건)·분할 선적·수량 불일치·다른 구분(HDX)·대장에 없는 PO 를 넣었습니다. 값은 모두 지어낸 것. */
+  var foxSupplier = { 'Vendor Code': 'EX-F06', 'Supplier Name': 'Foxtrot Engine Co. (예시)', 'Contact': 'Frank Lee', 'E-mail': 'frank.lee@foxtrot-engine.example.com', 'CC': '', 'Tel': '+1-000-000-0006', 'Country': 'USA', 'Remarks': '' };
+  function cumLedger(today) {
+    var L1 = function (part, qty) { return { seq: 1, part: part, unit: 'EA', qty: qty, currency: 'USD', price: null, amount: null, delivery: '', desc: 'Engine Assy', mfr_part: '' }; };
+    return [
+      { po_no: 'M261300011', supplier_code: 'EX-F06', sent_date: shift(today, -120), exw_promised: '2026-10-07', lines: [L1('EXE-1001', 16)] },           // 분할 선적 10+6 = 16 일치, 노란 줄
+      { po_no: 'O261300020', supplier_code: 'EX-F06', sent_date: shift(today, -120), lines: [L1('EXE-2002', 8)] },                                        // 출고 2 + 남은 4 = 6 ≠ 8 (부족)
+      { po_no: 'B261300030', supplier_code: 'EX-F06', sent_date: shift(today, -90), lines: [L1('EXP-3003', 12)], oc_lines: [{ part: 'EXP-3003', qty: 10 }] }, // PO 12 일치, OC 10 불일치
+      { po_no: 'M261300060', supplier_code: 'EX-F06', sent_date: shift(today, -60), lines: [L1('EXE-6006', 5)] },                                         // 날짜가 글자('11/2/2026')
+      { po_no: 'M261300070', supplier_code: 'EX-F06', sent_date: shift(today, -30), lines: [L1('EXE-7007', 4)] }                                          // 파일에 없음
+    ].map(function (p) { p.item = p.lines[0].part; return p; });
+  }
+  var CUM_HEAD = ['품목', '구분', 'Order Date', '1OM#', 'Customer PO', 'Plant', 'CSL#', 'Machine', 'Part No.', 'Engine', 'Part Description', 'SO#', 'QTY', 'Req Date', 'Promise Date', 'INV Date', 'INV#', 'Remarks', 'Shipping mode', 'Emission', 'Status'];
+  // [행 값들, 노란 줄 여부]. 날짜는 엑셀 일련번호(46302 = 2026-10-07)·글자 둘 다
+  var cumData = [
+    [['엔진', 'HCE', 46120, 520001, 'M261300011', 'PLANT-A', 'EXE-1001', 'EX100', 'EXE-1001', 'ENG-A', 'Engine Assy', 80001, 10, 46280, 46309, '', '', '일정 변경 10/7->10/14', 'OCEAN', 'Tier4', 'Undispatched'], true],
+    [['엔진', 'HCE', 46120, 520002, 'M261300011', 'PLANT-A', 'EXE-1001', 'EX100', 'EXE-1001', 'ENG-A', 'Engine Assy', 80002, 6, 46280, 46323, '', '', '분할 선적', 'OCEAN', 'Tier4', 'undispatched '], true],
+    [['엔진', 'HCE', 46130, 520010, 'O261300020', 'PLANT-B', 'EXE-2002', 'EX200', 'EXE-2002', 'ENG-B', 'Engine Assy', 80010, 2, 46270, 46275, 46274, 'INV-0101', '', 'OCEAN', 'StageV', 'Dispatched'], false],
+    [['엔진', 'HCE', 46130, 520011, 'O261300020', 'PLANT-B', 'EXE-2002', 'EX200', 'EXE-2002', 'ENG-B', 'Engine Assy', 80011, 4, 46270, 46300, '', '', '', 'OCEAN', 'StageV', 'Undispatched'], false],
+    [['부품', 'HCE', 46150, 520020, 'B261300030', 'PLANT-A', 'EXP-3003', 'EX300', 'EXP-3003', '', 'Turbo Kit', 80020, 12, 46290, 46315, '', '', '', 'AIR', '', 'Undispatched'], false],
+    [['엔진', 'HDX', 46150, 520030, 'M261300040', 'PLANT-B', 'EXE-4004', 'EX400', 'EXE-4004', 'ENG-C', 'Engine Assy', 80030, 2, 46290, 46310, '', '', '', 'OCEAN', 'Tier4', 'Undispatched'], true],
+    [['엔진', 'HCE', 46160, 520040, 'M261300050', 'PLANT-A', 'EXE-5005', 'EX500', 'EXE-5005', 'ENG-A', 'Engine Assy', 80040, 3, 46300, 46330, '', '', '', 'OCEAN', 'Tier4', 'Undispatched'], false],
+    [['엔진', 'HCE', 46170, 520050, 'M261300060', 'PLANT-A', 'EXE-6006', 'EX600', 'EXE-6006', 'ENG-A', 'Engine Assy', 80050, 5, 46300, '11/2/2026', '', '', '', 'OCEAN', 'Tier4', 'Undispatched'], false],
+    [['엔진', 'HCE', 46100, 520060, 'M261300080', 'PLANT-A', 'EXE-8008', 'EX800', 'EXE-8008', 'ENG-A', 'Engine Assy', 80060, 1, 46250, 46260, 46258, 'INV-0102', '', 'OCEAN', 'Tier4', 'Dispatched'], true]
+  ];
+  // 엑셀 모양 그대로: 1행 제목, 2행 머리글, 3행부터 자료, 끝에 합계 줄. yellow = { 엑셀 행번호: true }
+  function cumGrid() {
+    var grid = [['예시 Integrated Order Status wk38 분석 (지어낸 값)'], CUM_HEAD.slice()];
+    var yellow = {};
+    cumData.forEach(function (d) { grid.push(d[0].slice()); if (d[1]) yellow[grid.length] = true; });
+    grid.push(['', '', '', '', '', '', '', '', '', '', '', '', 45]);   // 합계 줄(PO·품번 없음)
+    return { grid: grid, yellow: yellow };
+  }
+
   var api = { contactRows: contactRows, ledger: ledger, poPdfs: poPdfs, weeklyOld: weeklyOld, weeklyNew: weeklyNew, packingRows: packingRows, blWeights: blWeights, mails: mails, shift: shift,
     echoSupplier: echoSupplier, realPoLines: realPoLines, realPoPaste: realPoPaste, realLedger: realLedger, ocGrid: ocGrid, ocFiles: ocFiles, replyEml: replyEml,
-    WOS_HEAD: WOS_HEAD, weeklyWk37: weeklyWk37, weeklyWk38: weeklyWk38 };
+    WOS_HEAD: WOS_HEAD, weeklyWk37: weeklyWk37, weeklyWk38: weeklyWk38,
+    foxSupplier: foxSupplier, cumLedger: cumLedger, CUM_HEAD: CUM_HEAD, cumGrid: cumGrid };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.OMSample = api;
 })(typeof window !== 'undefined' ? window : this);

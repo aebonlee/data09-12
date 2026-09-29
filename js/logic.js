@@ -680,7 +680,9 @@
       oc_no: str(r.oc_no),                      // 공급사 OC 번호(OC 파일의 INV # 등)
       followup_date: toDate(r.followup_date),
       lines: Array.isArray(r.lines) ? r.lines : [],               // PO 품목 줄(PO 본문 읽기 결과)
-      voyage: r.voyage && typeof r.voyage === 'object' ? r.voyage : {}  // 항차 체크리스트 {단계: 완료일}
+      voyage: r.voyage && typeof r.voyage === 'object' ? r.voyage : {},  // 항차 체크리스트 {단계: 완료일}
+      oc_lines: Array.isArray(r.oc_lines) ? r.oc_lines : [],       // OC 품목(품번·수량) — 수량 대조용
+      exw_plan: r.exw_plan && typeof r.exw_plan === 'object' ? r.exw_plan : {}  // Part No. 별 출하 일정 [{date, qty}] (Cummins 오더 현황)
     };
   }
 
@@ -910,6 +912,130 @@
       }
     });
     return out;
+  }
+
+  /* ── Cummins 오더 현황 → 대장 EXW DATE (2026-09-29 메일 추가 요청 2) ─────────────────────────────── */
+  // 요청: 「wk38 분석E」 시트에서 Status=Undispatched · 구분=HCE 만 골라 Promise Date 를 EXW DATE 로 입력.
+  //       노란 줄 = EXW 변경 건(확인 요망). PO·Part No. 수량에 맞게 — 분할 선적이면 날짜별 수량이 PO·OC 수량과 다를 수 있어 확인.
+  // 실물 확인: 2행 머리글, Status 는 수식(=IF(COUNTBLANK(INV#)…,"Abnormal","Undispatched"),"Dispatched")의 저장된 값.
+  var CUM_COLS = {
+    gubun: /^구분$/, status: /^status$/, po: /^customerpo$|^po$|^pono$/, part: /^partno$|^part$|^partnumber$/, qty: /^qty$|^quantity$/,
+    promise: /^promisedate$/, remarks: /^remarks?$/, so: /^so#?$/, om: /^1om#?$/, inv: /^inv#$/, req: /^reqdate$/
+  };
+  // grid: 행 배열(엑셀 1행부터, 빈 행 포함), yellow: { 엑셀 행번호: true }
+  function cumminsRows(grid, yellow) {
+    yellow = yellow || {};
+    var hi = -1, col = {};
+    for (var i = 0; i < Math.min(grid.length, 15) && hi < 0; i++) {
+      var c = {};
+      (grid[i] || []).forEach(function (v, j) { var n = norm(v); Object.keys(CUM_COLS).forEach(function (k) { if (c[k] == null && CUM_COLS[k].test(n)) c[k] = j; }); });
+      if (c.po != null && c.part != null && c.promise != null) { hi = i; col = c; }
+    }
+    if (hi < 0) return { rows: [], headerRow: 0, error: 'Customer PO · Part No. · Promise Date 머리글을 찾지 못했습니다' };
+    var rows = [];
+    for (var r = hi + 1; r < grid.length; r++) {
+      var g = grid[r] || [];
+      var po = str(g[col.po]), part = str(g[col.part]);
+      if (!po || !part) continue;                     // 합계·통계 줄은 PO·품번이 없어 빠집니다
+      var p = parsePromiseCell(g[col.promise]);
+      var at = function (k) { return col[k] == null ? '' : g[col[k]]; };
+      rows.push({ rowNo: r + 1, po: po, part: part, gubun: str(at('gubun')), status: str(at('status')), qty: toNumber(at('qty')),
+        promise: p.date, promiseRaw: p.raw, cancelled: p.cancelled, remarks: str(at('remarks')), so: str(at('so')), om: str(at('om')),
+        inv: str(at('inv')), yellow: !!yellow[r + 1] });
+    }
+    return { rows: rows, headerRow: hi + 1, error: '' };
+  }
+  function cumKey(po, part) { return str(po).toUpperCase() + '|' + norm(part); }
+  function sameWord(a, b) { return str(a).toLowerCase().replace(/\s+/g, '') === str(b).toLowerCase().replace(/\s+/g, ''); }
+
+  // opts: { status: 'Undispatched', gubun: 'HCE', supplierCode: 대장의 이 업체 PO 중 파일에 없는 것을 찾을 때 }
+  function cumminsExwPlan(rows, pos, opts) {
+    opts = opts || {};
+    var inGubun = rows.filter(function (r) { return !opts.gubun || sameWord(r.gubun, opts.gubun); });
+    var target = inGubun.filter(function (r) { return !opts.status || sameWord(r.status, opts.status); });
+    var allByKey = {};
+    inGubun.forEach(function (r) { (allByKey[cumKey(r.po, r.part)] = allByKey[cumKey(r.po, r.part)] || []).push(r); });
+    var groups = {}, order = [];
+    target.forEach(function (r) { var k = cumKey(r.po, r.part); if (!groups[k]) { groups[k] = []; order.push(k); } groups[k].push(r); });
+    var out = [], notInLedger = [];
+    order.forEach(function (k) {
+      var rs = groups[k];
+      var byDate = {};
+      rs.forEach(function (r) { var d = r.promise || (r.cancelled ? 'cancelled' : r.promiseRaw || '(날짜 없음)'); byDate[d] = byDate[d] || { date: d, qty: 0, rows: [], yellow: false }; byDate[d].qty += r.qty || 0; byDate[d].rows.push(r.rowNo); if (r.yellow) byDate[d].yellow = true; });
+      var schedule = Object.keys(byDate).sort().map(function (d) { return byDate[d]; });
+      var all = allByKey[k] || rs;
+      var g = {
+        key: k, po: rs[0].po, part: rs[0].part, rows: rs, schedule: schedule,
+        remainQty: rs.reduce(function (a, r) { return a + (r.qty || 0); }, 0),
+        fileQty: all.filter(function (r) { return !r.cancelled; }).reduce(function (a, r) { return a + (r.qty || 0); }, 0),
+        dispatchedQty: all.filter(function (r) { return rs.indexOf(r) < 0 && !r.cancelled; }).reduce(function (a, r) { return a + (r.qty || 0); }, 0),
+        yellow: rs.some(function (r) { return r.yellow; }), badDate: schedule.some(function (x) { return !/^\d{4}-\d{2}-\d{2}$/.test(x.date); })
+      };
+      var po = pos.filter(function (p) { return str(p.po_no).toUpperCase() === str(g.po).toUpperCase(); })[0];
+      if (!po) { g.state = 'no_po'; notInLedger.push(g); return; }
+      g.po_no = po.po_no; g.supplier_code = po.supplier_code;
+      var line = (po.lines || []).filter(function (l) { return norm(l.part) === norm(g.part) || (l.mfr_part && norm(l.mfr_part) === norm(g.part)); })[0];
+      var oc = (po.oc_lines || []).filter(function (l) { return norm(l.part) === norm(g.part) || (l.sup_part && norm(l.sup_part) === norm(g.part)); })[0];
+      g.poQty = line ? line.qty : null; g.ocQty = oc ? oc.qty : null;
+      var plan = po.exw_plan && po.exw_plan[g.part];
+      g.before = plan && plan.length ? plan.map(function (x) { return x.date + (x.qty != null ? ' ×' + x.qty : ''); }).join(', ') : (po.exw_promised || '');
+      g.after = schedule.map(function (x) { return x.date + ' ×' + x.qty; }).join(', ');
+      g.changed = !!g.before && g.before !== g.after && !(schedule.length === 1 && g.before === schedule[0].date);
+      var issues = [];
+      if (po.lines && po.lines.length && !line) issues.push('PO 품목에 없는 Part No.');
+      if (g.poQty == null && g.ocQty == null) issues.push('대장에 PO 수량 없음(PO 본문·OC 를 먼저 읽어 주십시오)');
+      if (g.poQty != null && g.fileQty !== g.poQty) issues.push('파일 수량 합 ' + g.fileQty + ' ≠ PO 수량 ' + g.poQty + (g.fileQty < g.poQty ? '(부족 ' + (g.poQty - g.fileQty) + ')' : '(초과 ' + (g.fileQty - g.poQty) + ')'));
+      if (g.ocQty != null && g.fileQty !== g.ocQty) issues.push('파일 수량 합 ' + g.fileQty + ' ≠ OC 수량 ' + g.ocQty + (g.fileQty < g.ocQty ? '(부족 ' + (g.ocQty - g.fileQty) + ')' : '(초과 ' + (g.fileQty - g.ocQty) + ')'));
+      if (g.badDate) issues.push('Promise Date 가 날짜가 아닌 줄');
+      g.issues = issues;
+      g.state = issues.length ? 'check' : 'match';
+      out.push(g);
+    });
+    // 대장에는 있으나 파일(거른 뒤)에 없는 PO·품번 — 이 업체의 PO 중 아직 출고 전인 것
+    var codes = [];
+    if (opts.supplierCode) codes.push(opts.supplierCode);
+    else out.forEach(function (g) { if (g.supplier_code && codes.indexOf(g.supplier_code) < 0) codes.push(g.supplier_code); });
+    var seen = {}; order.forEach(function (k) { seen[k] = true; });
+    var fileKeysAll = {}; rows.forEach(function (r) { fileKeysAll[cumKey(r.po, r.part)] = r.status; });
+    var missing = [];
+    pos.forEach(function (p) {
+      if (codes.indexOf(p.supplier_code) < 0 || p.exw_actual) return;
+      var parts = (p.lines && p.lines.length) ? p.lines.map(function (l) { return l.part; }) : [''];
+      parts.forEach(function (part) {
+        var k = cumKey(p.po_no, part);
+        if (part ? seen[k] : order.some(function (x) { return x.indexOf(str(p.po_no).toUpperCase() + '|') === 0; })) return;
+        missing.push({ po_no: p.po_no, part: part, inFileAs: part && fileKeysAll[k] != null ? (fileKeysAll[k] || '(Status 없음)') : '' });
+      });
+    });
+    return { groups: out, notInLedger: notInLedger, ledgerMissing: missing,
+      counts: { rows: rows.length, target: target.length, groups: order.length, match: out.filter(function (g) { return g.state === 'match'; }).length,
+        check: out.filter(function (g) { return g.state === 'check'; }).length, yellow: target.filter(function (r) { return r.yellow; }).length } };
+  }
+
+  // 고른 묶음을 대장에 넣습니다: po.exw_plan[Part No.] = [{date, qty}], 약속 EXW DATE = 그 PO 의 가장 이른 날
+  function applyCumminsExw(pos, groups, keys) {
+    var changes = [];
+    var res = pos.map(function (p) { return p; });
+    groups.forEach(function (g) {
+      if (keys.indexOf(g.key) < 0) return;
+      var i = -1; res.forEach(function (p, j) { if (i < 0 && str(p.po_no).toUpperCase() === str(g.po).toUpperCase()) i = j; });
+      if (i < 0) return;
+      var p = Object.assign({}, res[i]);
+      p.exw_plan = Object.assign({}, p.exw_plan || {});
+      var before = p.exw_promised || '';
+      p.exw_plan[g.part] = g.schedule.filter(function (x) { return /^\d{4}-\d{2}-\d{2}$/.test(x.date); }).map(function (x) { return { date: x.date, qty: x.qty, yellow: x.yellow }; });
+      var dates = [];
+      Object.keys(p.exw_plan).forEach(function (k) { p.exw_plan[k].forEach(function (x) { dates.push(x.date); }); });
+      dates.sort();
+      if (dates.length) p.exw_promised = dates[0];
+      res[i] = p;
+      changes.push({ po_no: p.po_no, part: g.part, before_exw: before, after_exw: p.exw_promised, before: g.before, after: g.after, yellow: g.yellow, state: g.state });
+    });
+    return { pos: res, changes: changes };
+  }
+  function exwPlanText(p) {
+    if (!p.exw_plan) return '';
+    return Object.keys(p.exw_plan).map(function (k) { return k + ': ' + p.exw_plan[k].map(function (x) { return x.date + '×' + x.qty; }).join(', '); }).join(' / ');
   }
 
   /* ── 항차 체크리스트(항차 업무 매뉴얼, 2026-09-29 메일 자료) ─────────────────────────────── */
@@ -1360,7 +1486,7 @@
         '약속 EXW DATE': p.exw_promised, '실제 출고일': p.exw_actual, 'EXW 지연일': delay,
         '선적 예정일(ETD)': p.etd, 'A/N 수신': p.an_received ? 'Y' : '', '선적서류 수신': p.docs_received ? 'Y' : '',
         '상태': poFlags(p, today, db.settings).map(function (f) { return f.label; }).join(', '), '메모': p.note,
-        'PO 납기': p.delivery_date || '', 'OC 번호': p.oc_no || '',
+        'PO 납기': p.delivery_date || '', 'OC 번호': p.oc_no || '', 'EXW 일정(품번별)': exwPlanText(p),
         '항차 진행': (function () { var v = voyageProgress(p); return v.done + '/' + v.total; })()
       };
     });
@@ -1388,7 +1514,7 @@
     parsePromiseCell: parsePromiseCell, weeklyInFileChanges: weeklyInFileChanges, DIR_LABEL: DIR_LABEL,
     VOYAGE_STEPS: VOYAGE_STEPS, voyageStepDone: voyageStepDone, voyageProgress: voyageProgress, DEFAULT_SUPPLIER_CHECKLIST: DEFAULT_SUPPLIER_CHECKLIST,
     isOcAttachment: isOcAttachment, parseOcFileName: parseOcFileName, parseOcGrid: parseOcGrid, compareOcToPo: compareOcToPo,
-    parseTsv: parseTsv, LB_TO_KG: LB_TO_KG, bytesToBinary: bytesToBinary,
+    parseTsv: parseTsv, cumminsRows: cumminsRows, cumminsExwPlan: cumminsExwPlan, applyCumminsExw: applyCumminsExw, exwPlanText: exwPlanText, LB_TO_KG: LB_TO_KG, bytesToBinary: bytesToBinary,
     crc32: crc32, makeZip: makeZip, makeSimplePdf: makeSimplePdf, ledgerRows: ledgerRows, pct: pct, num1: num1
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

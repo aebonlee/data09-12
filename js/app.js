@@ -233,7 +233,7 @@
   var MENU = [
     ['#/home', '처음'], ['#/suppliers', '업체'], ['#/po', 'PO 발주 메일'], ['#/ledger', '관리 대장'],
     ['#/followup', 'OC 팔로우업'], ['#/kpi', '접수율·준수율'], ['#/mail', '메일 분류'],
-    ['#/promise', 'Promise Date'], ['#/weight', '중량 대조'], ['#/settings', '설정']
+    ['#/promise', 'Promise Date'], ['#/cummins', 'Cummins EXW'], ['#/weight', '중량 대조'], ['#/settings', '설정']
   ];
   App.go = function (hash) { if (location.hash === hash) App.render(); else location.hash = hash; };
   App.render = function () {
@@ -264,6 +264,7 @@
       db._sample = true;
       App.db = db; App.save();
       App.ensureEcho();   // 실물 양식 예시(Echo 업체, OC 대기 PO 2건)
+      App.ensureFox();    // Cummins 오더 현황 예시와 짝이 되는 PO
       App.toast('예시 데이터를 불러왔습니다.'); App.render();
     }
     if (App.db.suppliers.length || App.db.pos.length) {
@@ -298,6 +299,7 @@
         step('#/followup', 'OC 팔로우업', 'OC 미접수 건을 업체별로 묶어 팔로우업 메일 초안을 만듭니다.'),
         step('#/kpi', '접수율·준수율', 'OC 접수율, EXW 준수율(%), 평균 지연일을 전체·업체별로 봅니다.'),
         step('#/promise', 'Promise Date', 'Cummins Weekly Order Status 두 주차(시트)를 비교해 Promise Date가 밀림·당김·취소된 줄을 찾습니다. 한 주차뿐이면 파일 안 변경 기록을 모읍니다.'),
+        step('#/cummins', 'Cummins EXW', '오더 현황 분석 시트에서 Status·구분으로 거른 줄의 Promise Date를 PO·품번별로 대장 EXW DATE에 넣습니다. 분할 선적 수량 합을 PO·OC 수량과 대조하고 노란 줄(EXW 변경)을 표시합니다.'),
         step('#/weight', '중량 대조', 'Packing List 자재 합중량과 B/L 중량이 맞는지 확인합니다.'))));
     main.appendChild(h('div', { class: 'card' }, h('h2', null, '1단계에서 하지 않는 것'),
       h('ul', null,

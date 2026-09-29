@@ -263,6 +263,8 @@
       p.lines && p.lines.length ? h('details', { class: 'card', style: 'margin:16px 0 0' }, h('summary', null, h('strong', null, 'PO 품목 ' + p.lines.length + '줄')),
         App.table([{ label: '품번', cell: function (l) { return l.part; } }, { label: 'Mfr 품번', cell: function (l) { return l.mfr_part; } },
           { label: '수량', cell: function (l) { return l.qty; } }, { label: '단가', cell: function (l) { return l.price; } }, { label: '납기', cls: 'nowrap', cell: function (l) { return l.delivery; } }], p.lines)) : null,
+      p.exw_plan && Object.keys(p.exw_plan).length ? h('div', { class: 'card', style: 'margin:16px 0 0' }, h('h3', null, '품번별 출하 일정(Cummins 오더 현황에서 반영)'),
+        App.table([{ label: 'Part No.', cell: function (k) { return k; } }, { label: 'EXW DATE × 수량', cell: function (k) { return p.exw_plan[k].map(function (x) { return x.date + ' × ' + x.qty + (x.yellow ? ' (노란 줄)' : ''); }).join(', '); } }], Object.keys(p.exw_plan))) : null,
       voyageBox(p, voyage, f),
       !isNew ? h('div', { class: 'card', style: 'margin:16px 0 0' }, h('h3', null, '상황별 메일 초안'),
         h('div', { class: 'btn-row' }, tplSel, h('button', { type: 'button', class: 'btn', onclick: function () {
@@ -274,7 +276,7 @@
     if (!isNew) buttons.push({ label: '삭제', danger: true, onClick: function () { db.pos = db.pos.filter(function (x) { return x !== p; }); App.save(); App.render(); } });
     buttons.push({ label: '저장', primary: true, onClick: function () {
       var v = {}; Object.keys(f).forEach(function (k) { v[k] = f[k].type === 'checkbox' ? f[k].checked : f[k].value; });
-      v.lines = p.lines || []; v.voyage = voyage; v.followup_date = p.followup_date || '';
+      v.lines = p.lines || []; v.voyage = voyage; v.followup_date = p.followup_date || ''; v.oc_lines = p.oc_lines || []; v.exw_plan = p.exw_plan || {};
       var np = L.cleanPo(v, db.suppliers);
       if (!np.po_no) { App.toast('PO 번호를 입력해 주십시오.', true); return false; }
       if (np.po_no !== p.po_no && db.pos.some(function (x) { return x.po_no === np.po_no; })) { App.toast('이미 있는 PO 번호입니다.', true); return false; }

@@ -49,3 +49,30 @@ fs.writeFileSync(path.join(OUT, '예시데이터_PO_붙여넣기_O261110502.txt'
   fs.writeFileSync(path.join(OUT, '예시데이터_Integrated_Order_Status_wk37_wk38.xlsx'), XLSX.write(wb, { bookType: 'xlsx', type: 'buffer' }));
 }
 console.log(fs.readdirSync(OUT).join('\n'));
+
+// ── 「wk38 분석E」 형식 예시(노란 채우기 포함) ──
+// SheetJS 무료판은 셀 서식을 쓰지 못해, 노란 채우기가 든 xlsx 는 XML 을 직접 만들어 ZIP 으로 묶습니다.
+{
+  const g = S.cumGrid();
+  const esc = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const colName = c => { let s = ''; c++; while (c) { const m = (c - 1) % 26; s = String.fromCharCode(65 + m) + s; c = Math.floor((c - 1) / 26); } return s; };
+  const rowsXml = g.grid.map((row, i) => {
+    const rn = i + 1, st = g.yellow[rn] ? ' s="1"' : '';
+    const cells = row.map((v, c) => {
+      if (v === '' || v == null) return g.yellow[rn] ? '<c r="' + colName(c) + rn + '"' + st + '/>' : '';
+      const ref = colName(c) + rn;
+      return typeof v === 'number' ? '<c r="' + ref + '"' + st + '><v>' + v + '</v></c>' : '<c r="' + ref + '"' + st + ' t="inlineStr"><is><t>' + esc(v) + '</t></is></c>';
+    }).join('');
+    return '<row r="' + rn + '">' + cells + '</row>';
+  }).join('');
+  const X = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
+  const files = [
+    ['[Content_Types].xml', X + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>'],
+    ['_rels/.rels', X + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'],
+    ['xl/workbook.xml', X + '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="wk38 분석(예시)" sheetId="1" r:id="rId1"/></sheets></workbook>'],
+    ['xl/_rels/workbook.xml.rels', X + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'],
+    ['xl/styles.xml', X + '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFFF00"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="0" fillId="2" borderId="0" xfId="0" applyFill="1"/></cellXfs></styleSheet>'],
+    ['xl/worksheets/sheet1.xml', X + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>' + rowsXml + '</sheetData></worksheet>']
+  ];
+  fs.writeFileSync(path.join(OUT, '예시데이터_Integrated_Order_Status_wk38_분석.xlsx'), L.makeZip(files.map(([name, text]) => ({ name, text }))));
+}

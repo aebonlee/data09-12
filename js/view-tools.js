@@ -128,7 +128,7 @@
             { label: 'PO 납기 / OC DATE', cls: 'nowrap', cell: function (r) { return (r.po_delivery || '-') + ' / ' + (r.oc_date || '-'); } },
             { label: '판정', cell: function (r) { return r.notes.map(function (n) { return h('span', { class: 'badge ' + n.level }, n.text); }); } }
           ], c.rows));
-          applies.push({ po: po, oc_no: oc.oc_no, date: c.oc_date });
+          applies.push({ po: po, oc_no: oc.oc_no, date: c.oc_date, lines: oc.lines.filter(function (l) { return !l.po || l.po === no; }).map(function (l) { return { part: l.cust_part || l.sup_part, sup_part: l.sup_part, qty: l.qty }; }) });
         });
       });
       var over = h('input', { type: 'checkbox' });
@@ -139,6 +139,7 @@
           applies.forEach(function (a) {
             var changed = false;
             if (a.oc_no && !a.po.oc_no) { a.po.oc_no = a.oc_no; changed = true; }
+            if (a.lines && a.lines.length) { a.po.oc_lines = a.lines; changed = true; }   // Cummins 수량 대조에 씀
             if (a.date && (!a.po.exw_promised || over.checked) && a.po.exw_promised !== a.date) { a.po.exw_promised = a.date; changed = true; }
             if (changed) n++;
           });
@@ -362,4 +363,154 @@
     main.appendChild(box);
     function fmt(n) { return (Math.round(n * 1000) / 1000).toLocaleString('ko-KR', { maximumFractionDigits: 3 }); }
   };
+})(window);
+/* 화면: Cummins 오더 현황(분석 시트) → 관리 대장 EXW DATE — 2026-09-29 메일 추가 요청 2 */
+(function (root) {
+  'use strict';
+  var L = root.OMLogic, S = root.OMSample, App = root.OM, h = App.h;
+
+  // 시트 → { grid(1행부터, 빈 행 포함), yellow{엑셀 행: true} }. 노란 채우기는 cellStyles 로 읽은 셀 채우기 색(FFFF00)
+  function sheetGrid(ws) {
+    var rg = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+    var grid = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '', blankrows: true, range: { s: { r: 0, c: rg.s.c }, e: rg.e } });
+    var yellow = {}, n = 0;
+    for (var r = rg.s.r; r <= rg.e.r; r++) for (var c = rg.s.c; c <= rg.e.c; c++) {
+      var x = ws[XLSX.utils.encode_cell({ r: r, c: c })];
+      if (x && x.s && x.s.patternType === 'solid' && x.s.fgColor && /FFFF00$/i.test(x.s.fgColor.rgb || '')) { yellow[r + 1] = true; n++; break; }
+    }
+    return { grid: grid, yellow: yellow, yellowCount: n };
+  }
+  function pickSheet(names) {
+    return names.filter(function (n) { return /분석/.test(n); })[0] || names.filter(function (n) { return /^wk/i.test(n); })[0] || names[0];
+  }
+  function ensureFox() {
+    var db = App.db;
+    if (!L.supplierByCode(db.suppliers, 'EX-F06')) {
+      var m = L.guessMapping(Object.keys(S.foxSupplier), 'supplier');
+      db.suppliers = L.mergeSuppliers(db.suppliers, L.importSuppliers(L.applyMapping([S.foxSupplier], m)).suppliers);
+    }
+    var inc = S.cumLedger(App.today()).filter(function (p) { return !db.pos.some(function (x) { return x.po_no === p.po_no; }); }).map(function (p) { return L.cleanPo(p, db.suppliers); });
+    db.pos = L.upsertPos(db.pos, inc).pos; db._sample = true; App.save();
+  }
+
+  App.views.cummins = function (main) {
+    var db = App.db, st = App.state.cum = App.state.cum || { status: 'Undispatched', gubun: 'HCE', pick: {} };
+    main.appendChild(App.pageHead('Cummins 오더 현황 → EXW DATE 입력'));
+    main.appendChild(h('p', null, 'Cummins Integrated Order Status 파일의 분석 시트(예: 「wk38 분석E」)에서 Status·구분으로 거른 줄의 Promise Date를 관리 대장의 약속 EXW DATE로 넣습니다. Customer PO + Part No. 로 대장과 맞추고, 같은 PO·품번이 여러 날짜로 나뉘어 있으면(분할 선적) 날짜별 수량으로 보여 줍니다.'));
+    main.appendChild(h('div', { class: 'alert info' },
+      '수량 확인: 파일에서 같은 PO·품번의 수량 합(이미 출고된 줄 포함, 취소 제외)을 대장의 PO 수량(초기 발주)·OC 수량과 비교합니다. 일치하는 묶음만 처음부터 골라 두고, 부족·초과·수량 모름은 확인한 뒤 직접 골라 반영하십시오. ',
+      '노란 줄은 EXW 변경 건이라 「변경 확인 필요」로 표시합니다. 색을 읽지 못하는 파일이어도 지금 대장의 EXW와 다른 묶음은 「EXW 바뀜」으로 따로 표시됩니다.'));
+    var fileIn = h('input', { type: 'file', accept: '.xlsx,.xlsm,.xls', style: 'display:none' });
+    fileIn.addEventListener('change', function () {
+      var f = fileIn.files[0]; fileIn.value = ''; if (!f) return;
+      App.readBuffer(f).then(function (buf) {
+        var wb = XLSX.read(new Uint8Array(buf), { type: 'array', cellStyles: true, cellDates: false });
+        st.wb = wb; st.name = f.name; st.sample = false; st.sheet = pickSheet(wb.SheetNames); load(); App.render();
+      }).catch(function (e) { App.toast('파일을 읽지 못했습니다: ' + e.message, true); });
+    });
+    main.appendChild(h('div', { class: 'card' }, h('div', { class: 'btn-row' },
+      h('label', { class: 'btn btn-primary' }, '오더 현황 엑셀 선택', fileIn),
+      h('button', { type: 'button', class: 'btn', onclick: function () {
+        ensureFox(); var g = S.cumGrid();
+        st.wb = null; st.name = '예시데이터_Integrated_Order_Status_분석'; st.sample = true; st.sheet = 'wk38 분석(예시)';
+        st.grid = g.grid; st.yellow = g.yellow; st.yellowCount = Object.keys(g.yellow).length; st.pick = {}; st.last = null; parse(); App.render();
+      } }, '예시 파일로 해 보기'))));
+    if (!st.rows) return;
+
+    var sheetSel = st.wb ? h('select', { onchange: function () { st.sheet = sheetSel.value; load(); App.render(); } }, st.wb.SheetNames.map(function (n) { return h('option', { value: n }, n); })) : null;
+    if (sheetSel) sheetSel.value = st.sheet;
+    var stIn = h('input', { type: 'text', value: st.status, list: 'cumStatus' }), gbIn = h('input', { type: 'text', value: st.gubun, list: 'cumGubun' });
+    function uniq(k) { var o = []; st.rows.forEach(function (r) { if (r[k] && o.indexOf(r[k].trim()) < 0) o.push(r[k].trim()); }); return o.slice(0, 20); }
+    var supSel = App.supplierSelect(st.supplier || '', {});
+    supSel.options[0].textContent = '(자동: 파일과 맞은 PO의 업체)';
+    main.appendChild(h('div', { class: 'card' },
+      h('p', null, h('strong', null, st.name), ' · 시트 ', h('strong', null, st.sheet), ' · ', st.headerRow + '행 머리글 · 자료 ' + st.rows.length + '줄 · 노란 채우기 줄 ' + st.yellowCount + '개(머리글·합계 줄 포함)'),
+      st.error ? h('div', { class: 'alert warn' }, st.error) : null,
+      h('div', { class: 'form-grid cols-4' },
+        sheetSel ? App.field('시트', sheetSel, '「분석」이 든 시트를 먼저 고릅니다') : null,
+        App.field('Status', stIn, '비우면 전체. 대소문자·공백 무시'), App.field('구분', gbIn, '비우면 전체'),
+        App.field('「파일에 없는 PO」를 찾을 업체', supSel)),
+      h('datalist', { id: 'cumStatus' }, uniq('status').map(function (v) { return h('option', { value: v }); })),
+      h('datalist', { id: 'cumGubun' }, uniq('gubun').map(function (v) { return h('option', { value: v }); })),
+      h('div', { class: 'btn-row' }, h('button', { type: 'button', class: 'btn btn-primary', onclick: function () {
+        st.status = stIn.value.trim(); st.gubun = gbIn.value.trim(); st.supplier = supSel.value; st.pick = {}; App.render();
+      } }, '거르기 적용')),
+      h('p', { class: 'note' }, '실물 파일의 Status는 「INV#가 비었으면 Promise Date가 지났는지로 Abnormal/Undispatched」를 가르는 수식이며, 도구는 파일을 마지막으로 저장할 때 계산된 값을 씁니다.')));
+
+    var plan = L.cumminsExwPlan(st.rows, db.pos, { status: st.status, gubun: st.gubun, supplierCode: st.supplier || '' });
+    plan.groups.forEach(function (g) { if (st.pick[g.key] == null) st.pick[g.key] = g.state === 'match'; });
+    var c = plan.counts;
+    function tile(k, v, danger) { return h('div', { class: 'tile' + (danger ? ' danger' : '') }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)); }
+    main.appendChild(h('div', { class: 'tiles' },
+      tile('거른 줄', c.target + '줄'), tile('PO·품번 묶음', c.groups + '건'), tile('수량 일치', c.match + '건'), tile('확인 필요', c.check + '건', c.check > 0),
+      tile('노란 줄(변경)', c.yellow + '줄', c.yellow > 0), tile('대장에 없음', plan.notInLedger.length + '건'), tile('파일에 없음', plan.ledgerMissing.length + '건')));
+
+    
+    main.appendChild(h('div', { class: 'card' },
+      h('h2', null, '대장에 있는 PO — EXW DATE 입력 후보'),
+      h('div', { class: 'btn-row' },
+        h('button', { type: 'button', class: 'btn', onclick: function () { plan.groups.forEach(function (g) { st.pick[g.key] = g.state === 'match'; }); App.render(); } }, '일치 건만 고르기'),
+        h('button', { type: 'button', class: 'btn', onclick: function () { plan.groups.forEach(function (g) { st.pick[g.key] = false; }); App.render(); } }, '모두 풀기')),
+      App.table([
+        { label: '반영', cell: function (g) { return h('input', { type: 'checkbox', checked: !!st.pick[g.key], 'aria-label': g.po + ' ' + g.part + ' 반영', onchange: function (e) { st.pick[g.key] = e.target.checked; } }); } },
+        { label: 'Customer PO · Part No.', cell: function (g) { return h('span', null, h('strong', null, g.po), h('br'), h('small', null, g.part)); } },
+        { label: 'Promise Date × 수량', cls: 'nowrap', cell: function (g) {
+          return h('span', null, g.schedule.map(function (x, i) { return [i ? h('br') : null, x.date + ' × ' + x.qty, x.yellow ? h('span', { class: 'badge warn' }, '노란 줄') : null]; }));
+        } },
+        { label: '파일 합(출고+남은)', cell: function (g) { return g.fileQty + ' (' + g.dispatchedQty + '+' + g.remainQty + ')'; } },
+        { label: 'PO / OC 수량', cell: function (g) { return (g.poQty == null ? '-' : g.poQty) + ' / ' + (g.ocQty == null ? '-' : g.ocQty); } },
+        { label: '지금 EXW', cls: 'nowrap', cell: function (g) { return g.before || '(비어 있음)'; } },
+        { label: '판정', cell: function (g) {
+          return h('span', null,
+            g.yellow ? h('span', { class: 'badge danger' }, '변경 확인 필요') : null,
+            g.changed ? h('span', { class: 'badge warn' }, 'EXW 바뀜') : null,
+            g.issues.length ? g.issues.map(function (t) { return h('span', { class: 'badge warn' }, t); }) : h('span', { class: 'badge ok' }, '수량 일치'));
+        } },
+        { label: '파일 행', cell: function (g) { return h('small', { class: 'muted' }, g.rows.map(function (r) { return r.rowNo; }).join(', ')); } }
+      ], plan.groups, function (g) { return { class: g.yellow ? 'row-bad' : null }; }),
+      h('div', { class: 'btn-row', style: 'margin-top:12px' },
+        h('button', { type: 'button', class: 'btn btn-primary', onclick: function () {
+          var now = plan.groups.filter(function (g) { return st.pick[g.key]; });   // 누른 때의 체크 상태
+          if (!now.length) { App.toast('고른 묶음이 없습니다.', true); return; }
+          var r = L.applyCumminsExw(db.pos, plan.groups, now.map(function (g) { return g.key; }));
+          db.pos = r.pos; App.save(); st.last = r.changes; st.pick = {}; App.render();
+          App.toast('EXW DATE ' + r.changes.length + '건 반영');
+        } }, '고른 묶음을 대장 EXW DATE에 반영'),
+        h('button', { type: 'button', class: 'btn', onclick: function () { exportAll(plan); } }, '대조 결과 엑셀 내보내기')),
+      h('p', { class: 'note' }, '반영하면 PO의 품번별 출하 일정(날짜 × 수량)을 저장하고, 약속 EXW DATE는 그 PO의 가장 이른 날짜로 둡니다. 대장 「수정」 창에서 품번별 일정을 볼 수 있습니다.')));
+
+    if (st.last && st.last.length) main.appendChild(h('div', { class: 'card' }, h('h2', null, '방금 반영한 것 — 반영 전/후'),
+      App.table([
+        { label: 'PO', cell: function (x) { return x.po_no; } }, { label: 'Part No.', cell: function (x) { return x.part; } },
+        { label: '약속 EXW 전 → 후', cls: 'nowrap', cell: function (x) { return (x.before_exw || '(비어 있음)') + ' → ' + x.after_exw; } },
+        { label: '품번 일정 전', cell: function (x) { return x.before; } }, { label: '품번 일정 후', cell: function (x) { return x.after; } },
+        { label: '', cell: function (x) { return h('span', null, x.yellow ? h('span', { class: 'badge danger' }, '노란 줄') : null, x.state === 'check' ? h('span', { class: 'badge warn' }, '확인 후 반영') : null); } }
+      ], st.last)));
+
+    main.appendChild(h('details', { class: 'card' }, h('summary', null, h('strong', null, '대장에 없는 PO·품번 ' + plan.notInLedger.length + '건')),
+      h('p', { class: 'note' }, '파일에는 있지만 관리 대장에 PO가 없습니다. PO 발주 메일 화면이나 대장 가져오기로 먼저 등록하십시오.'),
+      App.table([{ label: 'Customer PO', cell: function (g) { return g.po; } }, { label: 'Part No.', cell: function (g) { return g.part; } },
+        { label: 'Promise Date × 수량', cell: function (g) { return g.schedule.map(function (x) { return x.date + '×' + x.qty; }).join(', '); } },
+        { label: '노란 줄', cell: function (g) { return g.yellow ? '예' : ''; } }], plan.notInLedger.slice(0, 300))));
+    main.appendChild(h('details', { class: 'card' }, h('summary', null, h('strong', null, '대장에는 있으나 거른 결과에 없는 PO·품번 ' + plan.ledgerMissing.length + '건')),
+      h('p', { class: 'note' }, '같은 업체의 PO 중 실제 출고일이 없는 것입니다. 파일의 다른 Status(Abnormal 등)로 있으면 그 값을 적었습니다.'),
+      App.table([{ label: 'PO', cell: function (x) { return x.po_no; } }, { label: 'Part No.', cell: function (x) { return x.part || '(PO 품목 없음)'; } },
+        { label: '파일에서의 Status', cell: function (x) { return x.inFileAs || '파일에 없음'; } }], plan.ledgerMissing)));
+
+    function exportAll(plan) {
+      function sch(g) { return g.schedule.map(function (x) { return x.date + '×' + x.qty + (x.yellow ? '(노란)' : ''); }).join(', '); }
+      App.writeXlsx((st.sample ? '예시데이터_' : '') + 'Cummins_EXW대조_' + App.today() + '.xlsx', {
+        '대장 PO': plan.groups.map(function (g) { return { 'Customer PO': g.po, 'Part No.': g.part, 'Promise Date×수량': sch(g), '파일 합': g.fileQty, '출고': g.dispatchedQty, '남은': g.remainQty, 'PO 수량': g.poQty == null ? '' : g.poQty, 'OC 수량': g.ocQty == null ? '' : g.ocQty, '지금 EXW': g.before, '판정': g.issues.join('; ') || '수량 일치', '노란 줄': g.yellow ? 'Y' : '', 'EXW 바뀜': g.changed ? 'Y' : '', '파일 행': g.rows.map(function (r) { return r.rowNo; }).join(',') }; }),
+        '대장에 없음': plan.notInLedger.map(function (g) { return { 'Customer PO': g.po, 'Part No.': g.part, 'Promise Date×수량': sch(g), '노란 줄': g.yellow ? 'Y' : '' }; }),
+        '파일에 없음': plan.ledgerMissing.map(function (x) { return { 'PO': x.po_no, 'Part No.': x.part, '파일 Status': x.inFileAs }; }),
+        '반영 전후': (st.last || []).map(function (x) { return { 'PO': x.po_no, 'Part No.': x.part, '약속 EXW 전': x.before_exw, '약속 EXW 후': x.after_exw, '품번 일정 전': x.before, '품번 일정 후': x.after }; })
+      });
+    }
+    function load() {
+      var g = sheetGrid(st.wb.Sheets[st.sheet]);
+      st.grid = g.grid; st.yellow = g.yellow; st.yellowCount = g.yellowCount; st.pick = {}; st.last = null; parse();
+    }
+    function parse() { var r = L.cumminsRows(st.grid, st.yellow); st.rows = r.rows; st.headerRow = r.headerRow; st.error = r.error; }
+  };
+  App.ensureFox = ensureFox;
 })(window);
