@@ -1,0 +1,42 @@
+To
+Fax
+Attn.
+Echo Lighting Inc.
+Date
+2026-09-01 (TUE)
+Emma Stone
+Our Ref.
+Prepared by
+O261110502
+SAMPLE BUYER
+Subject: Purchase Order (O261110502)
+Seller's name : Echo Lighting Inc.
+Address : 100 Example Road, Sample City, USA
+Contract No. : O261110502
+Issued Date : SEP 01, 2026
+1. Scope of Supply and Specification
+SEQ
+PART
+NO.
+UNIT
+Q'ty
+Currency
+ITEM DESCRIPTION
+1
+EX22-20001
+EA
+60
+USD
+LAMP-EXAMPLE C [Mfr Part Number : EC-3001]
+PRICE
+Contract
+Delivery
+Date
+AMOUNT
+12.00
+720
+Oct 15, 2026
+REMARK
+2. Contract Amount : USD 720 EXW Example Port, Incoterms 2010
+4. Country of Origin : U.S.A
+The country of origin stated above.

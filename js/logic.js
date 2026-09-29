@@ -15,7 +15,12 @@
       weight_tol_kg: 0,       // 중량 허용 오차(kg)
       weight_tol_pct: 0,      // 중량 허용 오차(%) — kg·% 중 큰 쪽을 허용
       po_regex: '',           // PO 번호 찾기 정규식(비우면 기본 규칙)
-      oc_keywords: 'order confirmation, order acknowledgement, OC, confirmation',
+      oc_keywords: 'order confirmation, order acknowledgement, OC, confirmation, O.A/O.C',
+      oc_request_days: 7,     // 발주 메일에 「OC 를 며칠 안에 보내 달라」고 적는 일수(실제 메일: 7일)
+      transit_us: 60,         // 항차 매뉴얼 「지역별 평균 운송기간」(일)
+      transit_eu: 90,
+      transit_jpcn: 15,
+      transit_in: 45,
       sender_name: '',
       sender_email: '',
       sender_company: '',
@@ -34,9 +39,10 @@
   // 상황별 영문 메일 기본 문안(빈칸 채우기). 실제 사내 문안을 받으면 설정 화면에서 바꿉니다.
   function defaultTemplates() {
     return {
+      // 2026-09-29 받은 실제 발주 메일의 제목·문안 구성을 따랐습니다(한 업체의 PO 여러 건을 한 통에 묶을 수 있음).
       po_mail: {
-        subject: '[PO {PO}] Purchase Order from {COMPANY}',
-        body: 'Dear {CONTACT},\n\nPlease find attached our Purchase Order {PO}.\nKindly send us the Order Confirmation (OC) with the EXW date by return mail.\n\n{CHECKLIST}\n\nBest regards,\n{SENDER}\n{DEPT}\n{COMPANY}'
+        subject: 'Purchase Order [{CODE}] : {PO} / {SUPPLIER}',
+        body: 'Dear sirs,\n\nHope you\'re having a good day.\n\nPlease find attached the new P.O.\nWe would appreciate it if you could kindly provide the O.A/O.C within {OC_DAYS} days.\n\nPO NO: {PO}\n\n{CHECKLIST}\n\nBest regards\n{SENDER}\n{DEPT}\n{COMPANY}'
       },
       oc_followup: {
         subject: '[Reminder] Order Confirmation request - {SUPPLIER}',
@@ -157,14 +163,22 @@
       { key: 'etd', label: '선적 예정일(ETD)', aliases: ['etd', '선적 예정일', '선적일'] },
       { key: 'an_received', label: 'A/N 수신', aliases: ['a/n', 'an', 'a/n 수신', 'arrival notice'] },
       { key: 'docs_received', label: '선적서류 수신', aliases: ['선적서류', '선적서류 수신', 'shipping documents', 'docs'] },
-      { key: 'note', label: '메모', aliases: ['메모', 'note', 'remark', '비고'] }
+      { key: 'note', label: '메모', aliases: ['메모', 'note', 'remark', '비고'] },
+      { key: 'delivery_date', label: 'PO 납기', aliases: ['po 납기', 'contract delivery date', 'delivery date', '납기일', '납기'] },
+      { key: 'oc_no', label: 'OC 번호', aliases: ['oc 번호', 'oc no', 'oc#', 'oc number', 'confirmation no'] }
     ],
     weekly: [
       { key: 'po', label: 'PO 번호', required: true, aliases: ['po', 'po no', 'po number', 'po#', 'customer po', 'purchase order', 'order no', 'order number'] },
       { key: 'line', label: 'PO 라인', aliases: ['line', 'line no', 'po line', 'item no', 'line#', '라인'] },
       { key: 'part', label: '품번', aliases: ['part', 'part no', 'part number', 'item', 'material', '품번'] },
       { key: 'qty', label: '수량', aliases: ['qty', 'quantity', 'order qty', '수량'] },
-      { key: 'promise', label: 'Promise Date', required: true, aliases: ['promise date', 'promised date', 'promise', 'promise dt', 'confirmed date'] }
+      { key: 'promise', label: 'Promise Date', required: true, aliases: ['promise date', 'promised date', 'promise', 'promise dt', 'confirmed date'] },
+      // 실제 Cummins Integrated Order Status 열(2026-09-29 메일 자료): 1OM#·SO#·Req Date·Status·Remarks
+      { key: 'om', label: '1OM# (오더 번호, 선택)', aliases: ['1om#', '1om', 'om#', 'om no'] },
+      { key: 'so', label: 'SO# (선택)', aliases: ['so#', 'so no', 'sales order', 'so'] },
+      { key: 'req', label: 'Req Date (선택)', aliases: ['req date', 'request date', 'required date', 'requested date'] },
+      { key: 'status', label: 'Status (선택)', aliases: ['status', '상태'] },
+      { key: 'remarks', label: 'Remarks (선택)', aliases: ['remarks', 'remark', 'comment', 'comments', '비고'] }
     ],
     packing: [
       { key: 'group', label: '묶음 기준(Invoice·B/L 번호 등, 선택)', aliases: ['invoice', 'invoice no', 'b/l', 'bl no', 'b/l no', 'shipment', 'container'] },
@@ -301,24 +315,176 @@
   /* ── PO 번호 찾기 ─────────────────────────────── */
   // 기본 규칙: 'PO', 'P/O', 'Purchase Order', 'Order No' 다음에 오는 숫자 포함 토큰(가정 — 실제 PO 양식 확인 후 조정)
   var DEFAULT_PO_RE = /(?:\bP\.?\s?\/?O\.?|purchase\s+order|order)\s*(?:no\.?|number|#)?\s*[:#.\-]?\s*([A-Z0-9][A-Z0-9\-\/]{3,}[0-9])/ig;
+  // 실제 PO 체계(2026-09-29 메일 자료): 영문 1자 + 숫자 9자리(예: M·O·B 로 시작). 낱말 앞에 'PO' 가 없어도 찾습니다.
+  var HD_PO_RE = /(?:^|[^A-Za-z0-9])([A-Z]\d{9})(?![A-Za-z0-9])/g;
 
   function poNumbersIn(text, customRegex) {
     var s = str(text);
-    var found = [];
-    var re;
+    var hits = [];
+    var res = customRegex ? [] : [new RegExp(HD_PO_RE.source, 'g'), new RegExp(DEFAULT_PO_RE.source, 'ig')];
     if (customRegex) {
-      try { re = new RegExp(customRegex, 'g'); } catch (e) { return { list: [], error: '정규식 오류: ' + e.message }; }
-    } else {
-      re = new RegExp(DEFAULT_PO_RE.source, 'ig');
+      try { res.push(new RegExp(customRegex, 'g')); } catch (e) { return { list: [], error: '정규식 오류: ' + e.message }; }
     }
-    var m, guard = 0;
-    while ((m = re.exec(s)) && guard++ < 500) {
-      var v = (m[1] != null ? m[1] : m[0]).trim();
-      if (!/\d/.test(v)) { if (m.index === re.lastIndex) re.lastIndex++; continue; }
-      if (found.indexOf(v) < 0) found.push(v);
-      if (m.index === re.lastIndex) re.lastIndex++;
-    }
+    res.forEach(function (re) {
+      var m, guard = 0;
+      while ((m = re.exec(s)) && guard++ < 500) {
+        var v = (m[1] != null ? m[1] : m[0]).trim();
+        if (/\d/.test(v)) hits.push({ v: v, i: m.index });
+        if (m.index === re.lastIndex) re.lastIndex++;
+      }
+    });
+    // 글 속 위치 순서로, 같은 번호는 한 번만
+    hits.sort(function (a, b) { return a.i - b.i; });
+    var found = [];
+    hits.forEach(function (x) { if (found.indexOf(x.v) < 0) found.push(x.v); });
     return { list: found, error: '' };
+  }
+
+  /* ── PO 본문(구매발주서) 읽기 ─────────────────────────────── */
+  // 실제 구매발주서(PDF, 2026-09-29 메일 자료) 레이아웃 기준.
+  // pdf.js 로 읽은 글, PDF 뷰어에서 복사해 붙여넣은 글 모두 줄바꿈 모양이 달라서, 공백을 하나로 편 뒤 순서로 읽습니다.
+  //   To <공급사> Date <YYYY-MM-DD> / Attn. <담당> Prepared by / Subject: Purchase Order (<PO>)
+  //   Seller's name : <공급사> Address : ... Contract No. : <PO> Issued Date : <MON D, YYYY>
+  //   1. Scope of Supply ... ITEM DESCRIPTION
+  //   <SEQ> <PART NO.> <UNIT> <Q'ty> <Currency> <PRICE> <AMOUNT> <Delivery Date> <설명 [Mfr Part Number : X]>
+  //   2. Contract Amount : <통화> <금액> <인코텀즈> <장소>, Incoterms 2010
+  var UNIT_RE = '(?:EA|PC|PCS|SET|SETS|KG|G|M|MM|L|LOT|EACH|PR|PAIR|ROLL|BOX|UNIT|UNITS|MT|TON)';
+  var INCOTERMS = ['EXW', 'FCA', 'FAS', 'FOB', 'CFR', 'CIF', 'CPT', 'CIP', 'DAP', 'DPU', 'DAT', 'DDP'];
+  function flat(s) { return str(s).replace(/[ \s]+/g, ' '); }
+  function num(v) { var n = toNumber(v); return n == null ? null : n; }
+
+  function parsePoText(text) {
+    var t = flat(text);
+    var r = { po_no: '', refs: [], supplier: '', attn: '', po_date: '', issued_date: '', currency: '', amount: null,
+      incoterms: '', incoterms_place: '', origin: '', payment: '', lines: [], delivery_date: '', warnings: [] };
+    if (!t) { r.warnings.push('글이 비어 있습니다'); return r; }
+    var m;
+    // PO 번호: Contract No. → Our Ref. → Subject 괄호 → 일반 규칙 순
+    // 번호에는 숫자가 하나 이상 있어야 합니다(복사한 글에서 「Our Ref. Prepared by」처럼 칸 이름이 이어 붙는 경우 제외)
+    var NO = '([A-Z0-9\\-]*\\d[A-Z0-9\\-]*)';
+    [new RegExp('Contract No\\.?\\s*:?\\s*' + NO, 'i'), new RegExp('Our Ref\\.?\\s*:?\\s*(?:Prepared by\\s+)?' + NO, 'i'), new RegExp('Purchase Order\\s*\\(\\s*' + NO + '\\s*\\)', 'i')].forEach(function (re) {
+      var x = re.exec(t); if (x && r.refs.indexOf(x[1]) < 0) r.refs.push(x[1]);
+    });
+    r.po_no = r.refs[0] || poNumbersIn(t).list[0] || '';
+    if (r.refs.length > 1) r.warnings.push('PO 번호가 서로 다르게 적혀 있습니다: ' + r.refs.join(', '));
+    if ((m = /Seller['’`]?s\s+name\s*:\s*(.+?)\s+Address\s*:/i.exec(t))) r.supplier = m[1];
+    else if ((m = /(?:^|\s)To\s+(.+?)\s+(?:Date|Fax)\b/.exec(t))) r.supplier = m[1];
+    if ((m = /Attn\.?\s*:?\s*(.+?)\s+(?:Prepared by|CC\b|Subject)/i.exec(t))) r.attn = m[1];
+    if ((m = /(?:^|\s)Date\s*:?\s*(\d{4}-\d{2}-\d{2})/.exec(t))) r.po_date = m[1];
+    if ((m = /Issued Date\s*:?\s*([A-Za-z]{3,9}\.? \d{1,2},? \d{4}|\d{4}[-.\/]\d{1,2}[-.\/]\d{1,2})/i.exec(t))) r.issued_date = toDate(m[1]);
+    if ((m = new RegExp('Contract Amount\\s*:?\\s*([A-Z]{3})\\s*([\\d,]+(?:\\.\\d+)?)(?:\\s+(' + INCOTERMS.join('|') + ')\\b\\s*([^,0-9]*))?', 'i').exec(t))) {
+      r.currency = m[1].toUpperCase(); r.amount = num(m[2]);
+      if (m[3]) { r.incoterms = m[3].toUpperCase(); r.incoterms_place = str(m[4]).replace(/\s*Incoterms.*$/i, ''); }
+    }
+    if ((m = /Country of Origin\s*:\s*(.+?)\s+(?:The country|\d+\.\s)/i.exec(t))) r.origin = m[1];
+    if ((m = /Payment Terms\s*:\s*(.+?)\s+\d+\.\s/i.exec(t))) r.payment = m[1];
+
+    // 품목 줄: 「ITEM DESCRIPTION」 뒤 ~ 「Contract Amount」 앞
+    var start = t.search(/ITEM DESCRIPTION/i); start = start < 0 ? 0 : start + 'ITEM DESCRIPTION'.length;
+    var end = t.search(/Contract Amount/i); if (end < start) end = t.length;
+    var sec = ' ' + t.slice(start, end);
+    var re = new RegExp('\\s(\\d{1,3})\\s+([A-Z0-9][A-Z0-9\\-./]{2,})\\s+(' + UNIT_RE + ')\\s+([\\d,]+(?:\\.\\d+)?)\\s+([A-Z]{3})\\s+([\\d,]+(?:\\.\\d+)?)\\s+([\\d,]+(?:\\.\\d+)?)\\s+([A-Za-z]{3,9}\\.? \\d{1,2},? \\d{4}|\\d{4}[-./]\\d{1,2}[-./]\\d{1,2})', 'g');
+    var hits = [], x;
+    while ((x = re.exec(sec))) hits.push({ m: x, s: x.index, e: re.lastIndex });
+    hits.forEach(function (hh, i) {
+      var desc = sec.slice(hh.e, i + 1 < hits.length ? hits[i + 1].s : sec.length).trim().replace(/\s+\d{1,2}\.$/, '');
+      var mfr = /\[\s*Mfr\.?\s*Part\s*(?:Number|No\.?)\s*:\s*([^\]]+?)\s*\]/i.exec(desc);
+      var L = {
+        seq: +hh.m[1], part: hh.m[2], unit: hh.m[3], qty: num(hh.m[4]), currency: hh.m[5], price: num(hh.m[6]), amount: num(hh.m[7]),
+        delivery: toDate(hh.m[8]), desc: desc.replace(/\s*\[[^\]]*\]\s*/g, ' ').trim(), mfr_part: mfr ? mfr[1] : ''
+      };
+      if (L.qty != null && L.price != null && L.amount != null && Math.abs(L.qty * L.price - L.amount) > Math.max(1, L.amount * 0.001)) {
+        r.warnings.push(L.seq + '번 줄: 수량×단가(' + round2(L.qty * L.price) + ')와 금액(' + L.amount + ')이 다릅니다');
+      }
+      r.lines.push(L);
+    });
+    // PDF 뷰어에서 복사하면 표가 열 단위로 끊겨 「SEQ PART UNIT Q'ty Currency 설명」 묶음과
+    // 「PRICE AMOUNT Delivery Date」 묶음이 따로 나옵니다. 그때는 두 묶음을 나온 순서대로 짝짓습니다.
+    if (!hits.length) {
+      var reA = new RegExp('\\s(\\d{1,3})\\s+([A-Z0-9][A-Z0-9\\-./]{2,})\\s+(' + UNIT_RE + ')\\s+([\\d,]+(?:\\.\\d+)?)\\s+([A-Z]{3})\\s', 'g');
+      var reB = /([\d,]*\d(?:\.\d+)?)\s+([\d,]*\d(?:\.\d+)?)\s+([A-Za-z]{3,9}\.? \d{1,2},? \d{4}|\d{4}[-.\/]\d{1,2}[-.\/]\d{1,2})/g;
+      var as = [], bs = [], y;
+      while ((y = reA.exec(sec))) as.push({ m: y, s: y.index, e: reA.lastIndex });
+      var afterA = as.length ? as[as.length - 1].e : 0;
+      as.forEach(function (a, i) {
+        var d = sec.slice(a.e, i + 1 < as.length ? as[i + 1].s : sec.length);
+        var cut = d.search(/\s(?:PRICE|AMOUNT|Contract\s+Delivery|REMARK)\b|\s[\d,]*\d(?:\.\d+)?\s+[\d,]*\d(?:\.\d+)?\s+[A-Za-z]{3,9}\.? \d{1,2},? \d{4}/);
+        a.desc = (cut >= 0 ? d.slice(0, cut) : d).trim();
+      });
+      reB.lastIndex = afterA;
+      while ((y = reB.exec(sec))) bs.push(y);
+      as.forEach(function (a, i) {
+        var b = bs[i] || null;
+        var mfr = /\[\s*Mfr\.?\s*Part\s*(?:Number|No\.?)\s*:\s*([^\]]+?)\s*\]/i.exec(a.desc);
+        r.lines.push({ seq: +a.m[1], part: a.m[2], unit: a.m[3], qty: num(a.m[4]), currency: a.m[5], price: b ? num(b[1]) : null, amount: b ? num(b[2]) : null,
+          delivery: b ? toDate(b[3]) : '', desc: a.desc.replace(/\s*\[[^\]]*\]\s*/g, ' ').trim(), mfr_part: mfr ? mfr[1] : '' });
+      });
+      if (as.length && bs.length !== as.length) r.warnings.push('단가·금액·납기 묶음 수(' + bs.length + ')가 품목 수(' + as.length + ')와 달라 확인이 필요합니다');
+    }
+    if (!r.lines.length) r.warnings.push('품목 줄을 찾지 못했습니다(스캔본이거나 양식이 다름)');
+    else {
+      var sum = r.lines.reduce(function (a, l) { return a + (l.amount || 0); }, 0);
+      if (r.amount != null && Math.abs(sum - r.amount) > 1) r.warnings.push('품목 금액 합계(' + round2(sum) + ')와 Contract Amount(' + r.amount + ')가 다릅니다');
+      var ds = r.lines.map(function (l) { return l.delivery; }).filter(Boolean).sort();
+      r.delivery_date = ds[0] || '';
+      if (ds.length && ds[0] !== ds[ds.length - 1]) r.warnings.push('줄마다 납기가 다릅니다(' + ds[0] + ' ~ ' + ds[ds.length - 1] + ') — 가장 이른 날을 PO 납기로 둡니다');
+    }
+    return r;
+  }
+  function round2(n) { return Math.round(n * 100) / 100; }
+
+  // 대장 「품목」 칸용 한 줄 요약
+  function itemSummary(lines) {
+    if (!lines || !lines.length) return '';
+    return lines[0].part + (lines.length > 1 ? ' 외 ' + (lines.length - 1) + '건' : '');
+  }
+
+  /* ── 날짜 더하기·지역 운송기간·L/C 일정 (항차 매뉴얼 규칙) ─────────────────────────────── */
+  function addDays(iso, n) {
+    var d = dayNum(iso); if (d == null || n == null || isNaN(n)) return '';
+    var x = new Date((d + Number(n)) * DAY);
+    return x.getUTCFullYear() + '-' + pad(x.getUTCMonth() + 1) + '-' + pad(x.getUTCDate());
+  }
+  function addWorkdays(iso, n) {
+    var cur = iso, left = n;
+    if (dayNum(iso) == null) return '';
+    while (left > 0) { cur = addDays(cur, 1); var wd = new Date(dayNum(cur) * DAY).getUTCDay(); if (wd !== 0 && wd !== 6) left--; }
+    return cur;
+  }
+  function addMonths(iso, n) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || ''); if (!m) return '';
+    var y = +m[1], mo = +m[2] - 1 + n, d = +m[3];
+    y += Math.floor(mo / 12); mo = ((mo % 12) + 12) % 12;
+    var last = new Date(Date.UTC(y, mo + 1, 0)).getUTCDate();
+    return y + '-' + pad(mo + 1) + '-' + pad(Math.min(d, last));
+  }
+  // 매뉴얼 표 「지역별 평균 운송기간」: 미국 60일, 유럽 90일, 일본·중국 15일, 인도 45일
+  var REGIONS = [
+    { key: 'us', label: '미국', setting: 'transit_us', words: ['usa', 'us', 'u.s.a', 'u.s.a.', 'united states', 'america', '미국'] },
+    { key: 'eu', label: '유럽', setting: 'transit_eu', words: ['germany', 'italy', 'france', 'spain', 'uk', 'united kingdom', 'england', 'netherlands', 'belgium', 'sweden', 'finland', 'denmark', 'norway', 'poland', 'czech', 'austria', 'switzerland', 'portugal', 'hungary', 'slovakia', 'europe', '독일', '이탈리아', '프랑스', '스페인', '영국', '네덜란드', '벨기에', '스웨덴', '핀란드', '덴마크', '폴란드', '체코', '오스트리아', '스위스', '유럽'] },
+    { key: 'jpcn', label: '일본·중국', setting: 'transit_jpcn', words: ['japan', 'china', 'prc', '일본', '중국'] },
+    { key: 'in', label: '인도', setting: 'transit_in', words: ['india', '인도'] }
+  ];
+  function regionOf(country) {
+    var c = str(country).toLowerCase().replace(/\s+/g, ' ');
+    if (!c) return null;
+    var cn = c.replace(/[.\s]/g, '');
+    return REGIONS.filter(function (r) {
+      return r.words.some(function (w) { var wn = w.replace(/[.\s]/g, ''); return wn.length <= 3 ? cn === wn : cn.indexOf(wn) >= 0; });
+    })[0] || null;
+  }
+  function transitDays(country, st) {
+    var r = regionOf(country); st = st || defaultSettings();
+    return r ? { region: r.label, days: Number(st[r.setting]) } : null;
+  }
+  // 매뉴얼: Delivery Date(PO Sheet) − 운송기간 = Incoterms Date / ETA 는 ETD(없으면 B/L Date) + 운송일
+  function exwTarget(deliveryIso, country, st) { var t = transitDays(country, st); return t && deliveryIso ? addDays(deliveryIso, -t.days) : ''; }
+  function etaFromEtd(etdIso, country, st) { var t = transitDays(country, st); return t && etdIso ? addDays(etdIso, t.days) : ''; }
+  // 매뉴얼 L/C 요청: 개설일 = 신청일 + 2영업일, 최종선적일 = 개설일 + 6개월, 유효기일 = 최종선적일 + 3주
+  function lcDates(requestIso) {
+    var open = addWorkdays(requestIso, 2);
+    var ship = addMonths(open, 6);
+    return { open: open, lastShipment: ship, expiry: addDays(ship, 21) };
   }
 
   // 파일명에서 PO 번호 후보: 확장자를 떼고, 숫자를 포함한 5자 이상 토큰
@@ -367,6 +533,7 @@
     var v = {
       SENDER: st.sender_name || '', DEPT: st.sender_dept || '', COMPANY: st.sender_company || '',
       SUPPLIER: supplier ? supplier.name : '', CONTACT: (supplier && supplier.contact) || 'Sir or Madam',
+      CODE: supplier ? supplier.code : '', OC_DAYS: st.oc_request_days != null && st.oc_request_days !== '' ? st.oc_request_days : 7,
       CHECKLIST: checklistText(supplier)
     };
     Object.keys(extra || {}).forEach(function (k) { v[k] = extra[k]; });
@@ -460,6 +627,22 @@
     };
   }
 
+  // 한 업체의 PO 여러 건을 메일 한 통으로(실제 발주 메일 방식: 제목·본문에 PO 번호를 쉼표로 나열, PDF 여러 개 첨부)
+  function poMailDraftGroup(pos, supplier, db, attachments) {
+    var t = db.templates.po_mail;
+    var nos = pos.map(function (p) { return p.po_no; });
+    var vars = mailVars(db.settings, supplier, { PO: nos.join(', '), EXW: '' });
+    return {
+      from: db.settings.sender_email || '',
+      to: supplier ? supplier.to : '',
+      cc: supplier ? supplier.cc : '',
+      subject: fillTemplate(t.subject, vars),
+      body: fillTemplate(t.body, vars),
+      attachments: attachments || [],
+      fileName: safeFileName('PO_' + nos.join('_') + '_' + (supplier ? supplier.name : '업체미상')) + '.eml'
+    };
+  }
+
   function situationDraft(key, po, supplier, db) {
     var t = db.templates[key];
     var vars = mailVars(db.settings, supplier, { PO: po.po_no, EXW: po.exw_promised || '(TBD)', PO_LIST: '- ' + po.po_no });
@@ -492,7 +675,12 @@
       etd: toDate(r.etd),
       an_received: yes(r.an_received),
       docs_received: yes(r.docs_received),
-      note: str(r.note)
+      note: str(r.note),
+      delivery_date: toDate(r.delivery_date),   // PO 납기(구매발주서의 Contract Delivery Date)
+      oc_no: str(r.oc_no),                      // 공급사 OC 번호(OC 파일의 INV # 등)
+      followup_date: toDate(r.followup_date),
+      lines: Array.isArray(r.lines) ? r.lines : [],               // PO 품목 줄(PO 본문 읽기 결과)
+      voyage: r.voyage && typeof r.voyage === 'object' ? r.voyage : {}  // 항차 체크리스트 {단계: 완료일}
     };
   }
 
@@ -508,6 +696,8 @@
         var cur = Object.assign({}, res[idx[p.po_no]]);
         Object.keys(p).forEach(function (k) {
           if (typeof p[k] === 'boolean') { if (p[k]) cur[k] = true; }
+          else if (Array.isArray(p[k])) { if (p[k].length) cur[k] = p[k]; }
+          else if (p[k] && typeof p[k] === 'object') { if (Object.keys(p[k]).length) cur[k] = Object.assign({}, cur[k] || {}, p[k]); }
           else if (p[k] !== '' && p[k] != null) cur[k] = p[k];
         });
         res[idx[p.po_no]] = cur; updated++;
@@ -613,34 +803,448 @@
   }
 
   /* ── Weekly Order Status: Promise Date 변경 ─────────────────────────────── */
-  function weeklyKey(r) {
-    var po = str(r.po), line = str(r.line), part = str(r.part);
-    return po + '|' + (line || part);
+  // 실제 파일(Cummins Integrated Order Status, 2026-09-29 메일 자료)에서 확인한 것:
+  //  - 한 파일에 주차별 시트(wk38, wk43 …)가 여러 개, 머리글이 1행 또는 2행
+  //  - 같은 Customer PO + Part No. 가 여러 행(분할 출고 — 1OM#·SO# 가 다름) → PO·품번만으로는 행이 겹침
+  //  - Promise Date 칸에 글이 들어가기도 함: 'cancelled', '2/29/2024=>2/1'(칸 안에 이전→변경 기록)
+  //  - Remarks 에 '9/12->10/25', '6/30=>8/17로 변경' 같은 변경 기록
+  // 그래서 PO + (라인 또는 품번) + 1OM# + SO# 로 먼저 맞추고, 남은 행은 PO + (라인 또는 품번) 의 나온 순서로 다시 맞춥니다.
+  var ARROW_RE = /\s*(?:=>|->|→|~>)\s*/;
+  var MD_RE = /(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/;
+
+  // 연도 없는 'M/D' 를 기준일에 가까운 연도로(기준일보다 6개월 넘게 앞서면 다음 해)
+  function mdWithYear(s, refIso, dayFirst) {
+    var m = MD_RE.exec(str(s));
+    if (!m) return '';
+    if (m[3]) return dayFirst ? ymd(m[3], m[2], m[1]) : ymd(m[3], m[1], m[2]);
+    var ry = refIso ? +refIso.slice(0, 4) : new Date().getFullYear();
+    var mo = dayFirst ? m[2] : m[1], d = dayFirst ? m[1] : m[2];
+    var cand = ymd(ry, mo, d);
+    if (refIso && cand) {
+      var diff = daysBetween(refIso, cand);
+      if (diff < -183) cand = ymd(ry + 1, mo, d);
+      else if (diff > 183) cand = ymd(ry - 1, mo, d);
+    }
+    return cand;
   }
 
-  function compareWeekly(oldRows, newRows, dayFirst) {
-    function index(rows, label) {
-      var m = {}, dups = [];
-      rows.forEach(function (r) {
-        if (!str(r.po)) return;
-        var k = weeklyKey(r);
-        if (m[k]) dups.push(label + ' ' + k.replace('|', ' / '));
-        m[k] = { po: str(r.po), line: str(r.line), part: str(r.part), qty: r.qty == null ? '' : r.qty, promise: toDate(r.promise, dayFirst), raw: str(r.promise) };
-      });
-      return { map: m, dups: dups };
+  // Promise Date 칸 한 개 → { date, prev, cancelled, raw }
+  function parsePromiseCell(v, dayFirst) {
+    var raw = str(v);
+    if (typeof v === 'number' || v instanceof Date) return { date: toDate(v, dayFirst), prev: '', cancelled: false, raw: raw };
+    if (/cancel/i.test(raw)) return { date: '', prev: '', cancelled: true, raw: raw };
+    var parts = raw.split(ARROW_RE);
+    if (parts.length >= 2) {
+      var prev = toDate(parts[0], dayFirst) || mdWithYear(parts[0], '', dayFirst);
+      var last = parts[parts.length - 1];
+      var now = toDate(last, dayFirst) || mdWithYear(last, prev, dayFirst);
+      return { date: now, prev: prev, cancelled: false, raw: raw };
     }
-    var a = index(oldRows, '이전 파일'), b = index(newRows, '새 파일');
-    var changed = [], added = [], removed = [], same = 0;
-    Object.keys(b.map).forEach(function (k) {
-      var n = b.map[k], o = a.map[k];
-      if (!o) { added.push(n); return; }
-      if (o.promise !== n.promise || (!o.promise && o.raw !== n.raw)) {
-        changed.push({ po: n.po, line: n.line, part: n.part || o.part, qty: n.qty, old: o.promise || o.raw, new: n.promise || n.raw, diffDays: daysBetween(o.promise, n.promise) });
-      } else same++;
+    return { date: toDate(raw, dayFirst), prev: '', cancelled: false, raw: raw };
+  }
+
+  function weeklyRow(r, dayFirst) {
+    var p = parsePromiseCell(r.promise, dayFirst);
+    return {
+      po: str(r.po), line: str(r.line), part: str(r.part), om: str(r.om), so: str(r.so),
+      qty: r.qty == null ? '' : r.qty, status: str(r.status), remarks: str(r.remarks), req: toDate(r.req, dayFirst),
+      promise: p.date, prevInCell: p.prev, cancelled: p.cancelled, raw: p.raw
+    };
+  }
+  function weeklyKey(r) { return str(r.po) + '|' + (str(r.line) || str(r.part)); }
+
+  function compareWeekly(oldRows, newRows, dayFirst) {
+    var A = oldRows.filter(function (r) { return str(r.po); }).map(function (r) { return weeklyRow(r, dayFirst); });
+    var B = newRows.filter(function (r) { return str(r.po); }).map(function (r) { return weeklyRow(r, dayFirst); });
+    var dups = 0;
+    function countDups(rows) { var s = {}; rows.forEach(function (r) { var k = weeklyKey(r); s[k] = (s[k] || 0) + 1; }); Object.keys(s).forEach(function (k) { if (s[k] > 1) dups += s[k] - 1; }); }
+    countDups(A); countDups(B);
+    var pairs = [], usedA = [], usedB = [];
+    // 1차: PO|라인·품번|1OM#|SO# 와 같은 키 안의 순서, 2차: PO|라인·품번 과 남은 행의 순서
+    [function (r) { return weeklyKey(r) + '|' + r.om + '|' + r.so; }, weeklyKey].forEach(function (keyFn) {
+      var idx = {};
+      A.forEach(function (r, i) { if (usedA[i]) return; var k = keyFn(r); (idx[k] = idx[k] || []).push(i); });
+      B.forEach(function (r, j) {
+        if (usedB[j]) return;
+        var list = idx[keyFn(r)];
+        if (list && list.length) { var i = list.shift(); usedA[i] = usedB[j] = true; pairs.push([A[i], r]); }
+      });
     });
-    Object.keys(a.map).forEach(function (k) { if (!b.map[k]) removed.push(a.map[k]); });
+    var changed = [], same = 0;
+    pairs.forEach(function (pr) {
+      var o = pr[0], n = pr[1];
+      var sameDate = o.promise && n.promise ? o.promise === n.promise : (o.raw === n.raw && o.cancelled === n.cancelled);
+      if (sameDate && o.cancelled === n.cancelled) { same++; return; }
+      var d = daysBetween(o.promise, n.promise);
+      var dir = n.cancelled && !o.cancelled ? 'cancel' : d == null ? 'check' : d > 0 ? 'later' : d < 0 ? 'earlier' : 'same';
+      changed.push({ po: n.po, line: n.line, part: n.part || o.part, om: n.om, so: n.so, qty: n.qty, status: n.status, remarks: n.remarks,
+        old: o.promise || o.raw, new: n.promise || n.raw, diffDays: d, dir: dir });
+    });
+    var added = B.filter(function (r, j) { return !usedB[j]; });
+    var removed = A.filter(function (r, i) { return !usedA[i]; });
     changed.sort(function (x, y) { return (y.diffDays || 0) - (x.diffDays || 0); });
-    return { changed: changed, added: added, removed: removed, same: same, duplicates: a.dups.concat(b.dups) };
+    return { changed: changed, added: added, removed: removed, same: same, duplicates: dups ? ['같은 PO·품번(라인)이 여러 행: ' + dups + '행 — 1OM#·SO#, 없으면 나온 순서로 맞췄습니다'] : [] };
+  }
+
+  var DIR_LABEL = { later: '밀림', earlier: '당김', cancel: '취소', check: '날짜 확인', same: '같음' };
+
+  // 한 주 파일만 있을 때: 칸 안(2/29=>2/1)·Remarks(9/12->10/25) 에 적힌 변경 기록을 모읍니다.
+  function weeklyInFileChanges(rows, dayFirst) {
+    var out = [];
+    rows.forEach(function (r) {
+      if (!str(r.po)) return;
+      var w = weeklyRow(r, dayFirst);
+      var ref = w.promise || w.req;
+      if (w.prevInCell) {
+        out.push({ po: w.po, part: w.part, so: w.so, source: 'Promise Date 칸', old: w.prevInCell, new: w.promise || w.raw.split(ARROW_RE).pop(), diffDays: daysBetween(w.prevInCell, w.promise), note: w.raw });
+        return;
+      }
+      if (w.cancelled) { out.push({ po: w.po, part: w.part, so: w.so, source: 'Promise Date 칸', old: '', new: 'cancelled', diffDays: null, note: w.raw }); return; }
+      // '7/11=> 7/28 => 7/21' 처럼 여러 번 바뀐 기록은 처음 → 마지막
+      var D = '\\d{1,2}\\/\\d{1,2}(?:\\/\\d{2,4})?';
+      var m = new RegExp('(' + D + ')((?:' + ARROW_RE.source + D + ')+)').exec(w.remarks);
+      if (m) {
+        var chain = m[2].split(ARROW_RE).filter(Boolean);
+        var o = mdWithYear(m[1], ref, dayFirst), n = mdWithYear(chain[chain.length - 1], o || ref, dayFirst);
+        out.push({ po: w.po, part: w.part, so: w.so, source: 'Remarks', old: o, new: n, diffDays: daysBetween(o, n), note: w.remarks });
+      }
+    });
+    return out;
+  }
+
+  /* ── 항차 체크리스트(항차 업무 매뉴얼, 2026-09-29 메일 자료) ─────────────────────────────── */
+  // 사람 이름·내부 코드는 빼고 단계만 옮겼습니다. auto 가 있는 단계는 대장 값으로 자동 완료됩니다.
+  var VOYAGE_STEPS = [
+    { key: 'po_delivery', group: 'PO 송부', label: 'SRM PO Sheet 에 Delivery Date 입력·저장 (Delivery Date − 지역 운송기간 = Incoterms Date)' },
+    { key: 'po_sent', group: 'PO 송부', label: 'PO PDF 저장 후 공급사에 메일 송부', auto: 'sent_date' },
+    { key: 'oc_received', group: 'OC 접수', label: '공급사 OC 수령', auto: 'oc_date' },
+    { key: 'oc_srm', group: 'OC 접수', label: 'SRM 선적납기관리 — EXW DATE 에 OC DATE(출하 예정일) 입력', auto: 'exw_promised' },
+    { key: 'lc_request', group: 'L/C (해당 업체만)', label: 'L/C 개설 의뢰 — 개설일 = 신청일+2영업일, 최종선적일 = 개설일+6개월, 유효기일 = 최종선적일+3주', optional: true },
+    { key: 'docs_download', group: '항차 입력', label: '수입운송의뢰에서 B/L·C/I·P/L(AL 있으면 AL) 내려받기', auto: 'docs_received' },
+    { key: 'ci_check', group: '항차 입력', label: '선적납기관리 — 선적 수량·인보이스 총금액을 C/I 와 대조' },
+    { key: 'bl_input', group: '항차 입력', label: 'Invoice Date·BL Date·인보이스 총금액, 최초/조정 ETD·ETA 입력(없으면 ETD = BL Date, ETA = 운송일 계산) 후 선적서류 확정' },
+    { key: 'bl_due', group: '항차 입력', label: 'B/L Due List — BL·C/I·P/L·COO(있으면) 첨부 후 선적문서 생성' },
+    { key: 'bl_weight', group: '항차 입력', label: 'Bill of Lading — Total Net/Gross Weight·Vessel Name 입력(P/L 합중량과 대조) 후 Confirm' },
+    { key: 'erp_send', group: '항차 입력', label: '외자 대금 지불 요청 — Invoice ERP 송신' },
+    { key: 'iv_gr', group: '항차 입력', label: 'SAP BL/IV 관리 — IV 및 GR, WorkFlow(송장 전기일 확인)' },
+    { key: 'approval', group: '항차 입력', label: '사내 결재에 BL·INV·PL 첨부' },
+    { key: 'bonded', group: '운송', label: '보세운송 요청(당일 오후 3시 전 도착 건은 다음 날 08시 창고 도착, B/L 첨부 필수) 또는 독차 요청' }
+  ];
+  function voyageStepDone(po, s) {
+    if (po.voyage && po.voyage[s.key]) return po.voyage[s.key];
+    if (s.auto) { var v = po[s.auto]; return v === true ? 'Y' : (v || ''); }
+    return '';
+  }
+  function voyageProgress(po) {
+    var steps = VOYAGE_STEPS.filter(function (s) { return !s.optional || (po.voyage && po.voyage[s.key]); });
+    var done = steps.filter(function (s) { return voyageStepDone(po, s); });
+    var next = steps.filter(function (s) { return !voyageStepDone(po, s); })[0] || null;
+    return { done: done.length, total: steps.length, next: next };
+  }
+
+  // 공급사에 보내는 체크리스트 기본 문안 — 실제 구매발주서의 조건(5~6항)과 발주 메일에서 뽑았습니다.
+  var DEFAULT_SUPPLIER_CHECKLIST = [
+    'Please send the O.A/O.C within 7 days with the EXW (ready) date.',
+    'Mark the country of origin on the item itself and on the shipping documents (must be identical).',
+    'Shipping mark: company name in diamond shape with Contract No., Case No., Description, Gross Weight and Origin.',
+    'Invoice: seller name/address, Contract No., beneficiary and bank information.',
+    'Send a copy of the shipping documents (B/L, C/I, P/L) within 5 days after shipment.',
+    'Wooden packing must be ISPM No.15 stamped (heat treated).'
+  ].join('\n');
+
+  /* ── .eml 읽기 ─────────────────────────────── */
+  function decodeQP(s) {
+    var bytes = [];
+    s = s.replace(/=\r?\n/g, '');
+    for (var i = 0; i < s.length; i++) {
+      if (s[i] === '=' && /^[0-9A-F]{2}$/i.test(s.substr(i + 1, 2))) { bytes.push(parseInt(s.substr(i + 1, 2), 16)); i += 2; }
+      else bytes.push(s.charCodeAt(i) & 255);
+    }
+    return new Uint8Array(bytes);
+  }
+  // RFC 2047: =?charset?B|Q?...?= (이웃한 두 인코딩 낱말 사이 공백은 지움)
+  function decodeWords(v) {
+    return str(v).replace(/(\?=)\s+(=\?)/g, '$1$2').replace(/=\?([^?]+)\?([BQ])\?([^?]*)\?=/gi, function (all, cs, enc, txt) {
+      var bytes = enc.toUpperCase() === 'B' ? unbase64(txt) : decodeQP(txt.replace(/_/g, ' '));
+      return fromUtf8(bytes, cs);
+    });
+  }
+  // 파일을 바이트로 읽었을 때(권장): 한 바이트 = 한 글자인 문자열로 바꿔 두고, 각 부분을 제 charset 으로 풉니다.
+  function bytesToBinary(u8) {
+    var s = '';
+    for (var i = 0; i < u8.length; i += 8192) s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
+    return s;
+  }
+  function binaryToBytes(s) {
+    var u = new Uint8Array(s.length);
+    for (var i = 0; i < s.length; i++) u[i] = s.charCodeAt(i) & 255;
+    return u;
+  }
+  function splitHead(raw) {
+    var i = raw.search(/\r?\n\r?\n/);
+    var head = i < 0 ? raw : raw.slice(0, i);
+    var body = i < 0 ? '' : raw.slice(i).replace(/^\r?\n\r?\n/, '');
+    var headers = {};
+    head.replace(/\r?\n[ \t]+/g, ' ').split(/\r?\n/).forEach(function (line) {
+      var m = /^([\w\-]+):\s*(.*)$/.exec(line);
+      if (m) { var k = m[1].toLowerCase(); if (headers[k] == null) headers[k] = m[2]; }
+    });
+    return { headers: headers, body: body };
+  }
+  // 머리글 매개변수: name="x", name=x, name*=utf-8''%ED..., name*0*=... name*1*=... (RFC 2231)
+  function headerParam(h, name) {
+    h = str(h);
+    var parts = {}, re = new RegExp('(?:^|;)\\s*' + name + '(\\*\\d+)?(\\*)?\\s*=\\s*("(?:[^"\\\\]|\\\\.)*"|[^;]*)', 'ig'), m, any = false;
+    while ((m = re.exec(h))) {
+      any = true;
+      var n = m[1] ? +m[1].slice(1) : 0;
+      var v = m[3].trim(); if (v[0] === '"') v = v.slice(1, -1).replace(/\\(.)/g, '$1');
+      parts[n] = { v: v, ext: !!m[2] };
+    }
+    if (!any) return '';
+    var keys = Object.keys(parts).map(Number).sort(function (a, b) { return a - b; });
+    var cs = 'utf-8', out = [];
+    keys.forEach(function (k, i) {
+      var p = parts[k], v = p.v;
+      if (p.ext) {
+        if (i === 0) { var q = /^([^']*)'[^']*'(.*)$/.exec(v); if (q) { cs = q[1] || cs; v = q[2]; } }
+        var bytes = [];
+        for (var j = 0; j < v.length; j++) {
+          if (v[j] === '%' && /^[0-9A-F]{2}$/i.test(v.substr(j + 1, 2))) { bytes.push(parseInt(v.substr(j + 1, 2), 16)); j += 2; }
+          else bytes.push(v.charCodeAt(j) & 255);
+        }
+        out.push(fromUtf8(new Uint8Array(bytes), cs));
+      } else out.push(decodeWords(v));
+    });
+    return out.join('');
+  }
+  function htmlToText(t) {
+    return t.replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|tr)>/gi, '\n').replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+  }
+  // 부분 하나를 재귀로 훑어 본문(plain/html)과 첨부를 모읍니다.
+  function walkPart(part, out, binary, depth) {
+    var ct = part.headers['content-type'] || 'text/plain';
+    var bm = /boundary\s*=\s*"?([^";]+)"?/i.exec(ct);
+    if (/^\s*multipart\//i.test(ct) && bm && depth < 12) {
+      var chunks = part.body.split('--' + bm[1]);
+      chunks.slice(1).forEach(function (c) {
+        if (/^--/.test(c)) return;                 // 닫는 경계 뒤(맺음말)
+        walkPart(splitHead(c.replace(/^[ \t]*\r?\n/, '')), out, binary, depth + 1);
+      });
+      return;
+    }
+    if (/^\s*message\/rfc822/i.test(ct) && depth < 12) { walkPart(splitHead(part.body), out, binary, depth + 1); return; }
+    var enc = str(part.headers['content-transfer-encoding']).toLowerCase();
+    var disp = part.headers['content-disposition'] || '';
+    var name = headerParam(disp, 'filename') || headerParam(ct, 'name');
+    var bytes;
+    if (enc === 'base64') bytes = unbase64(part.body);
+    else if (enc === 'quoted-printable') bytes = decodeQP(part.body);
+    else bytes = binary ? binaryToBytes(part.body) : null;
+    var isText = /^\s*text\/(plain|html)/i.test(ct);
+    if (name || /^\s*attachment/i.test(disp) || !isText) {
+      if (!bytes) bytes = utf8(part.body);
+      out.attachments.push({ name: name || '(이름 없음)', type: ct.split(';')[0].trim().toLowerCase(), size: bytes.length, bytes: bytes, inline: /^\s*inline/i.test(disp) });
+      return;
+    }
+    var cs = (/charset\s*=\s*"?([^";\s]+)/i.exec(ct) || [])[1] || 'utf-8';
+    var text = bytes ? fromUtf8(bytes, cs) : part.body;
+    if (/text\/html/i.test(ct)) { if (out.html == null) out.html = htmlToText(text); }
+    else if (out.plain == null) out.plain = text;
+  }
+  function addrOf(v) {
+    var m = /<([^>]+)>/.exec(v || '');
+    return (m ? m[1] : str(v).split(/[,;]/)[0]).trim().toLowerCase();
+  }
+  // raw: 문자열 또는 Uint8Array(파일 바이트). opts.tzOffsetMin: 받은 날을 셀 시간대(분, 한국 540). 없으면 이 PC 시간대.
+  function parseEml(raw, opts) {
+    opts = opts || {};
+    var binary = raw instanceof Uint8Array;
+    var text = binary ? bytesToBinary(raw) : String(raw || '');
+    var p = splitHead(text);
+    function hv(k) {
+      var v = p.headers[k] || '';
+      if (binary && /[\x80-\xff]/.test(v)) v = fromUtf8(binaryToBytes(v), 'utf-8'); // 인코딩 없이 들어온 8비트 머리글
+      return decodeWords(v);
+    }
+    var date = '', dateTime = '';
+    if (p.headers.date) {
+      var t = Date.parse(p.headers.date.replace(/\s*\(.*\)\s*$/, ''));
+      if (!isNaN(t)) {
+        dateTime = new Date(t).toISOString();
+        if (opts.tzOffsetMin != null) { var d = new Date(t + opts.tzOffsetMin * 60000); date = d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate()); }
+        else date = toDate(new Date(t));
+      }
+    }
+    var out = { plain: null, html: null, attachments: [] };
+    walkPart(p, out, binary, 0);
+    var from = hv('from');
+    return {
+      from: from, fromAddr: addrOf(from), to: hv('to'), cc: hv('cc'), subject: hv('subject'),
+      date: date, dateTime: dateTime, body: out.plain != null ? out.plain : (out.html || ''), attachments: out.attachments
+    };
+  }
+
+  /* ── 업체별 메일 분류 ─────────────────────────────── */
+  var OC_FILE_RE = /(?:^|[^A-Za-z])(?:OC|OA|O\.C|O\.A)(?:[^A-Za-z]|$)|order[\s_\-]*confirm|acknowledg/i;
+  function isOcAttachment(a) {
+    return !a.inline && /\.(xlsx?|xlsm|csv|pdf)$/i.test(a.name) && OC_FILE_RE.test(a.name.replace(/\.[^.]+$/, ''));
+  }
+  function escRe(s) { return s.replace(/[.*+?^${}()|[\]\\\/-]/g, '\\$&'); }
+
+  // 메일 한 통 분류: 발신 주소로 업체를 찾고, 제목·본문·첨부 파일명에 대장의 PO 번호가 있으면 연결합니다.
+  // 발신 도메인이 업체 마스터에 없어도, 찾은 PO 가 모두 한 업체 것이면 그 업체로 분류합니다(대리점·그룹사 메일).
+  // OC 후보 = 업체 확인 + 대장 PO 번호 포함 + (OC 낱말 또는 OC 첨부) + 그 PO 의 OC 수령일이 비어 있음
+  function classifyMail(mail, db) {
+    var atts = mail.attachments || [];
+    var names = atts.filter(function (a) { return !a.inline; }).map(function (a) { return a.name; }).join('\n');
+    var hay = mail.subject + '\n' + mail.body + '\n' + names;
+    var hayN = hay.toUpperCase();
+    var pos = db.pos.filter(function (p) {
+      if (!p.po_no) return false;
+      return new RegExp('(^|[^A-Z0-9])' + escRe(p.po_no.toUpperCase()) + '($|[^A-Z0-9])').test(hayN);
+    }).map(function (p) { return p.po_no; });
+    var sup = supplierByEmail(db.suppliers, mail.fromAddr), via = sup ? 'email' : '';
+    if (!sup && pos.length) {
+      var codes = [];
+      pos.forEach(function (no) { var p = db.pos.filter(function (x) { return x.po_no === no; })[0]; if (p && p.supplier_code && codes.indexOf(p.supplier_code) < 0) codes.push(p.supplier_code); });
+      if (codes.length === 1) { sup = supplierByCode(db.suppliers, codes[0]); via = sup ? 'po' : ''; }
+    }
+    var kws = str(db.settings.oc_keywords).split(/\s*,\s*/).filter(Boolean);
+    var kwHit = kws.filter(function (k) {
+      var re = new RegExp('(^|[^A-Za-z])' + escRe(k) + '(s|es)?($|[^A-Za-z])', /^[A-Z]{2,3}$/.test(k) ? '' : 'i');
+      return re.test(mail.subject + '\n' + mail.body);
+    });
+    var ocFiles = atts.filter(isOcAttachment).map(function (a) { return a.name; });
+    var ocTargets = pos.filter(function (no) {
+      var p = db.pos.filter(function (x) { return x.po_no === no; })[0];
+      return p && !p.oc_date && (!sup || !p.supplier_code || p.supplier_code === sup.code);
+    });
+    var known = db.pos.map(function (p) { return p.po_no; });
+    var unknownPos = poNumbersIn(mail.subject + '\n' + names, db.settings.po_regex).list.filter(function (no) { return known.indexOf(no) < 0; });
+    return {
+      supplier_code: sup ? sup.code : '', supplier_name: sup ? sup.name : '(미분류)', supplier_via: via,
+      pos: pos, keywords: kwHit, ocFiles: ocFiles, unknownPos: unknownPos,
+      ocCandidates: sup && (kwHit.length || ocFiles.length) ? ocTargets : [],
+      mismatch: sup ? pos.filter(function (no) {
+        var p = db.pos.filter(function (x) { return x.po_no === no; })[0];
+        return p && p.supplier_code && p.supplier_code !== sup.code;
+      }) : []
+    };
+  }
+
+  function applyOcDates(pos, updates) {
+    // updates: [{ po_no, date }] — 이미 OC 수령일이 있으면 건드리지 않습니다.
+    var n = 0;
+    var res = pos.map(function (p) {
+      var u = updates.filter(function (x) { return x.po_no === p.po_no; })[0];
+      if (u && !p.oc_date && u.date) { n++; return Object.assign({}, p, { oc_date: u.date }); }
+      return p;
+    });
+    return { pos: res, applied: n };
+  }
+
+  /* ── OC(Order Confirmation) 파일 읽기·PO 대조 ─────────────────────────────── */
+  // 실제 OC 엑셀(2026-09-29 메일 첨부, 공급사 양식)에서 확인한 것:
+  //  - 제목 「ORDER CONFIRMATION」, 16행쯤에 머리글: Units | <공급사> Part # | Cust. Part # | PO # | INV # | … | Unit Value | Total Value
+  //  - 확정 납기 열은 없고, 파일명 「<코드> <PO> OC <번호> <MM-DD-YY>.xls」의 날짜와 서명란 날짜가 같음
+  //    → 항차 매뉴얼 「OC Date 는 출하 예정일」에 따라 이 날짜를 OC 출하 예정일(약속 EXW DATE 후보)로 봅니다.
+  function parseOcFileName(name) {
+    var base = str(name).replace(/\.[a-z0-9]+$/i, '');
+    var oc = /(?:^|[^A-Za-z])OC\s*[#:.\-]?\s*(\d{3,})/i.exec(base);
+    var dm = /(\d{1,2})[-.](\d{1,2})[-.](\d{2,4})\s*$/.exec(base);
+    return { oc_no: oc ? oc[1] : '', date: dm ? ymd(dm[3], dm[1], dm[2]) : '', pos: poNumbersIn(base).list.filter(function (x) { return /^[A-Z]\d{9}$/.test(x); }) };
+  }
+  function cellN(v) { return norm(v).replace(/[#'’.]/g, function (c) { return c === '#' ? '#' : ''; }); }
+  function parseOcGrid(grid, fileName) {
+    var res = { oc_no: '', doc_date: '', is_oc: false, lines: [], pos: [], warnings: [] };
+    var fn = parseOcFileName(fileName);
+    var flatText = grid.slice(0, 80).map(function (r) { return r.join(' '); }).join(' ');
+    res.is_oc = /order\s+confirmation|acknowledg|\bO\.?C\b/i.test(flatText + ' ' + str(fileName));
+    var hi = -1, col = {};
+    for (var i = 0; i < Math.min(grid.length, 60) && hi < 0; i++) {
+      var c = {};
+      (grid[i] || []).forEach(function (v, j) {
+        var n = cellN(v);
+        if (!n) return;
+        if (c.po == null && /^(po#?|pono|ponumber|purchaseorder#?|customerpo|yourpo#?|orderno)$/.test(n)) c.po = j;
+        else if (c.qty == null && /^(units?|qty|quantity|qty#|orderqty|confirmedqty)$/.test(n)) c.qty = j;
+        else if (c.cust == null && /(cust|customer|buyer|your).*part/.test(n)) c.cust = j;
+        else if (c.sup == null && /part/.test(n) && !/desc/.test(n)) c.sup = j;
+        else if (c.inv == null && /^(inv#?|invoice#?|invoiceno|oc#?|ocno|confirmation#?|ackno)$/.test(n)) c.inv = j;
+        else if (c.price == null && /(unit(value|price|cost)|^price$|^unitprice$)/.test(n)) c.price = j;
+        else if (c.total == null && /(total(value|amount|price)?$|^amount$|^extended)/.test(n)) c.total = j;
+        else if (c.date == null && /((ship|exw|ready|promise|promised|delivery|dispatch|confirm(ed)?).*date|^etd$|^exw$)/.test(n)) c.date = j;
+        else if (c.desc == null && /desc/.test(n)) c.desc = j;
+      });
+      if (c.po != null && (c.qty != null || c.cust != null || c.sup != null)) { hi = i; col = c; }
+    }
+    if (hi < 0) { res.warnings.push('OC 표 머리글(PO # · 수량 · 품번)을 찾지 못했습니다'); }
+    else {
+      var blank = 0;
+      for (var r = hi + 1; r < grid.length && blank < 3; r++) {
+        var row = grid[r] || [];
+        var part = str(row[col.cust]) || str(row[col.sup]);
+        var qty = col.qty != null ? toNumber(row[col.qty]) : null;
+        if (!part && !str(row[col.po])) { blank++; continue; }
+        blank = 0;
+        if (!part) continue;
+        res.lines.push({
+          po: str(row[col.po]) || (fn.pos.length === 1 ? fn.pos[0] : ''), cust_part: str(row[col.cust]), sup_part: col.sup != null ? str(row[col.sup]) : '',
+          qty: qty, price: col.price != null ? toNumber(row[col.price]) : null, total: col.total != null ? toNumber(row[col.total]) : null,
+          oc_ref: col.inv != null ? str(row[col.inv]) : '', date: col.date != null ? toDate(row[col.date]) : '', desc: col.desc != null ? str(row[col.desc]) : ''
+        });
+      }
+      res.lines.forEach(function (l) { if (l.po && res.pos.indexOf(l.po) < 0) res.pos.push(l.po); });
+    }
+    res.oc_no = fn.oc_no || (res.lines[0] && res.lines[0].oc_ref) || '';
+    res.doc_date = fn.date;
+    if (!res.doc_date) {
+      // 파일명에 날짜가 없으면 표 아래(서명란 등)의 날짜 칸
+      for (var k = Math.max(hi + 1, 0); k < grid.length && !res.doc_date; k++) (grid[k] || []).forEach(function (v) { if (!res.doc_date && typeof v === 'number' && v > 40000 && v < 60000) res.doc_date = toDate(v); });
+    }
+    if (!res.lines.length && hi >= 0) res.warnings.push('OC 품목 줄이 없습니다');
+    if (!res.doc_date && !res.lines.some(function (l) { return l.date; })) res.warnings.push('출하 예정일(OC DATE)을 찾지 못했습니다 — 직접 입력해 주십시오');
+    return res;
+  }
+
+  // OC 한 건 ↔ 대장 PO 한 건(PO 본문에서 읽은 품목 줄) 대조
+  function compareOcToPo(po, oc) {
+    var rows = [], issues = 0;
+    var ocLines = oc.lines.filter(function (l) { return !l.po || l.po === po.po_no; });
+    var poLines = (po.lines || []).slice();
+    var usedPo = [];
+    var ocDate = function (l) { return l.date || oc.doc_date || ''; };
+    ocLines.forEach(function (l) {
+      var i = -1;
+      poLines.forEach(function (p, j) {
+        if (i >= 0 || usedPo[j]) return;
+        if (norm(p.part) === norm(l.cust_part) || (l.sup_part && (norm(p.part) === norm(l.sup_part) || norm(p.mfr_part) === norm(l.sup_part)))) i = j;
+      });
+      var p = i >= 0 ? poLines[i] : null;
+      if (i >= 0) usedPo[i] = true;
+      var notes = [];
+      if (!poLines.length) notes.push({ level: 'muted', text: 'PO 품목 정보 없음(PO 본문을 먼저 읽어 주십시오)' });
+      else if (!p) notes.push({ level: 'danger', text: 'PO 에 없는 품번' });
+      else {
+        if (p.qty != null && l.qty != null && p.qty !== l.qty) notes.push({ level: 'danger', text: '수량 다름(PO ' + p.qty + ' / OC ' + l.qty + ')' });
+        if (p.price != null && l.price != null && Math.abs(p.price - l.price) > 0.005) notes.push({ level: 'danger', text: '단가 다름(PO ' + p.price + ' / OC ' + l.price + ')' });
+        if (p.mfr_part && l.sup_part && norm(p.mfr_part) !== norm(l.sup_part)) notes.push({ level: 'warn', text: '공급사 품번 다름(PO Mfr ' + p.mfr_part + ' / OC ' + l.sup_part + ')' });
+        var d = daysBetween(p.delivery, ocDate(l));
+        if (d != null && d > 0) notes.push({ level: 'warn', text: 'OC 출하 예정일이 PO 납기보다 ' + d + '일 늦음' });
+      }
+      if (notes.some(function (n) { return n.level === 'danger' || n.level === 'warn'; })) issues++;
+      rows.push({ part: l.cust_part || l.sup_part, sup_part: l.sup_part, po_qty: p ? p.qty : null, oc_qty: l.qty, po_price: p ? p.price : null, oc_price: l.price,
+        po_delivery: p ? p.delivery : (po.delivery_date || ''), oc_date: ocDate(l), notes: notes.length ? notes : [{ level: 'ok', text: '일치' }] });
+    });
+    poLines.forEach(function (p, j) {
+      if (usedPo[j]) return;
+      issues++;
+      rows.push({ part: p.part, sup_part: p.mfr_part, po_qty: p.qty, oc_qty: null, po_price: p.price, oc_price: null, po_delivery: p.delivery, oc_date: '', notes: [{ level: 'danger', text: 'OC 에 없는 PO 줄' }] });
+    });
+    var dates = ocLines.map(ocDate).filter(Boolean).sort();
+    return { po_no: po.po_no, oc_no: oc.oc_no, oc_date: dates[0] || '', rows: rows, issues: issues };
   }
 
   /* ── Packing List 합중량 vs B/L 중량 ─────────────────────────────── */
@@ -669,110 +1273,21 @@
     return { status: Math.abs(diff) <= allowed + 1e-9 ? 'ok' : 'mismatch', diff: diff, diffPct: pct, allowed: allowed };
   }
 
-  /* ── .eml 읽기·업체별 분류 ─────────────────────────────── */
-  function decodeQP(s) {
-    var bytes = [];
-    s = s.replace(/=\r?\n/g, '');
-    for (var i = 0; i < s.length; i++) {
-      if (s[i] === '=' && /^[0-9A-F]{2}$/i.test(s.substr(i + 1, 2))) { bytes.push(parseInt(s.substr(i + 1, 2), 16)); i += 2; }
-      else bytes.push(s.charCodeAt(i) & 255);
-    }
-    return new Uint8Array(bytes);
+  // 엑셀·PDF 표를 복사해 붙여넣은 글(탭 구분, 없으면 2칸 이상 공백) → { headers, rows }
+  // 첫 줄에 숫자가 없으면 머리글로 씁니다. 자료가 파일로 오지 않을 때 쓰는 입력 양식입니다.
+  function parseTsv(text) {
+    var lines = str(text).split(/\r?\n/).filter(function (l) { return l.trim(); });
+    if (!lines.length) return { headers: [], rows: [] };
+    var split = function (l) { return (/\t/.test(l) ? l.split('\t') : l.trim().split(/\s{2,}/)).map(function (c) { return c.trim(); }); };
+    var first = split(lines[0]);
+    var hasHead = !first.some(function (c) { return toNumber(c) != null; });
+    var width = Math.max.apply(null, lines.map(function (l) { return split(l).length; }));
+    var headers = hasHead ? first : [];
+    for (var i = headers.length; i < width; i++) headers.push('열' + (i + 1));
+    var rows = (hasHead ? lines.slice(1) : lines).map(function (l) { var c = split(l), o = {}; headers.forEach(function (hd, j) { o[hd] = c[j] == null ? '' : c[j]; }); return o; });
+    return { headers: headers, rows: rows };
   }
-  function decodeWords(v) {
-    return str(v).replace(/\?=\s+=\?/g, '?==?').replace(/=\?([^?]+)\?([BQ])\?([^?]*)\?=/gi, function (all, cs, enc, txt) {
-      var bytes = enc.toUpperCase() === 'B' ? unbase64(txt) : decodeQP(txt.replace(/_/g, ' '));
-      return fromUtf8(bytes, cs);
-    });
-  }
-  function splitHead(raw) {
-    var i = raw.search(/\r?\n\r?\n/);
-    var head = i < 0 ? raw : raw.slice(0, i);
-    var body = i < 0 ? '' : raw.slice(i).replace(/^\r?\n\r?\n/, '');
-    var headers = {};
-    head.replace(/\r?\n[ \t]+/g, ' ').split(/\r?\n/).forEach(function (line) {
-      var m = /^([\w\-]+):\s*(.*)$/.exec(line);
-      if (m) { var k = m[1].toLowerCase(); if (headers[k] == null) headers[k] = m[2]; }
-    });
-    return { headers: headers, body: body };
-  }
-  function partText(part) {
-    var ct = part.headers['content-type'] || 'text/plain';
-    var enc = str(part.headers['content-transfer-encoding']).toLowerCase();
-    var cs = (/charset="?([^";\s]+)/i.exec(ct) || [])[1] || 'utf-8';
-    var bm = /boundary="?([^";]+)"?/i.exec(ct);
-    if (/multipart\//i.test(ct) && bm) {
-      var chunks = part.body.split('--' + bm[1]).slice(1);
-      var texts = chunks.map(function (c) { return splitHead(c.replace(/^\r?\n/, '')); })
-        .filter(function (p) { return !/attachment/i.test(p.headers['content-disposition'] || ''); });
-      var plain = texts.filter(function (p) { return /text\/plain/i.test(p.headers['content-type'] || ''); })[0];
-      var pick = plain || texts.filter(function (p) { return /text\/|multipart\//i.test(p.headers['content-type'] || ''); })[0];
-      return pick ? partText(pick) : '';
-    }
-    var bytes;
-    if (enc === 'base64') bytes = unbase64(part.body);
-    else if (enc === 'quoted-printable') bytes = decodeQP(part.body);
-    else bytes = null;
-    var text = bytes ? fromUtf8(bytes, cs) : part.body;
-    if (/text\/html/i.test(ct)) text = text.replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&');
-    return text;
-  }
-  function addrOf(v) {
-    var m = /<([^>]+)>/.exec(v || '');
-    return (m ? m[1] : str(v).split(/[,;]/)[0]).trim().toLowerCase();
-  }
-  function parseEml(raw) {
-    var p = splitHead(String(raw || ''));
-    var date = '';
-    if (p.headers.date) { var t = Date.parse(p.headers.date.replace(/\s*\(.*\)$/, '')); if (!isNaN(t)) date = toDate(new Date(t)); }
-    return {
-      from: decodeWords(p.headers.from || ''), fromAddr: addrOf(decodeWords(p.headers.from || '')),
-      to: decodeWords(p.headers.to || ''), subject: decodeWords(p.headers.subject || ''),
-      date: date, body: partText(p)
-    };
-  }
-
-  // 메일 한 통 분류: 발신 주소로 업체를 찾고, 제목·본문에 대장의 PO 번호가 있으면 연결합니다.
-  // OC 후보 = 업체 메일 + 대장 PO 번호 포함 + 제목·본문에 OC 낱말 포함 + 그 PO 의 OC 수령일이 비어 있음
-  function classifyMail(mail, db) {
-    var sup = supplierByEmail(db.suppliers, mail.fromAddr);
-    var hay = mail.subject + '\n' + mail.body;
-    var hayN = hay.toUpperCase();
-    var pos = db.pos.filter(function (p) {
-      if (!p.po_no) return false;
-      var re = new RegExp('(^|[^A-Z0-9])' + p.po_no.replace(/[.*+?^${}()|[\]\\\/-]/g, '\\$&').toUpperCase() + '($|[^A-Z0-9])');
-      return re.test(hayN);
-    }).map(function (p) { return p.po_no; });
-    var kws = str(db.settings.oc_keywords).split(/\s*,\s*/).filter(Boolean);
-    var kwHit = kws.filter(function (k) {
-      var re = new RegExp('(^|[^A-Za-z])' + k.replace(/[.*+?^${}()|[\]\\\/-]/g, '\\$&') + '($|[^A-Za-z])', /^[A-Z]{2,3}$/.test(k) ? '' : 'i');
-      return re.test(hay);
-    });
-    var ocTargets = pos.filter(function (no) {
-      var p = db.pos.filter(function (x) { return x.po_no === no; })[0];
-      return p && !p.oc_date && (!sup || !p.supplier_code || p.supplier_code === sup.code);
-    });
-    return {
-      supplier_code: sup ? sup.code : '', supplier_name: sup ? sup.name : '(미분류)',
-      pos: pos, keywords: kwHit,
-      ocCandidates: sup && kwHit.length ? ocTargets : [],
-      mismatch: sup ? pos.filter(function (no) {
-        var p = db.pos.filter(function (x) { return x.po_no === no; })[0];
-        return p && p.supplier_code && p.supplier_code !== sup.code;
-      }) : []
-    };
-  }
-
-  function applyOcDates(pos, updates) {
-    // updates: [{ po_no, date }] — 이미 OC 수령일이 있으면 건드리지 않습니다.
-    var n = 0;
-    var res = pos.map(function (p) {
-      var u = updates.filter(function (x) { return x.po_no === p.po_no; })[0];
-      if (u && !p.oc_date && u.date) { n++; return Object.assign({}, p, { oc_date: u.date }); }
-      return p;
-    });
-    return { pos: res, applied: n };
-  }
+  var LB_TO_KG = 0.45359237;
 
   /* ── 묶음 내려받기(ZIP, 무압축) ─────────────────────────────── */
   var CRC_TABLE = (function () {
@@ -844,7 +1359,9 @@
         '발주일': p.po_date, '송부일': p.sent_date, 'OC 수령일': p.oc_date,
         '약속 EXW DATE': p.exw_promised, '실제 출고일': p.exw_actual, 'EXW 지연일': delay,
         '선적 예정일(ETD)': p.etd, 'A/N 수신': p.an_received ? 'Y' : '', '선적서류 수신': p.docs_received ? 'Y' : '',
-        '상태': poFlags(p, today, db.settings).map(function (f) { return f.label; }).join(', '), '메모': p.note
+        '상태': poFlags(p, today, db.settings).map(function (f) { return f.label; }).join(', '), '메모': p.note,
+        'PO 납기': p.delivery_date || '', 'OC 번호': p.oc_no || '',
+        '항차 진행': (function () { var v = voyageProgress(p); return v.done + '/' + v.total; })()
       };
     });
   }
@@ -865,6 +1382,13 @@
     statsBySupplier: statsBySupplier, ocFollowups: ocFollowups,
     compareWeekly: compareWeekly, packingTotals: packingTotals, compareWeight: compareWeight,
     parseEml: parseEml, classifyMail: classifyMail, applyOcDates: applyOcDates,
+    parsePoText: parsePoText, itemSummary: itemSummary, poMailDraftGroup: poMailDraftGroup,
+    addDays: addDays, addWorkdays: addWorkdays, addMonths: addMonths, regionOf: regionOf, transitDays: transitDays,
+    exwTarget: exwTarget, etaFromEtd: etaFromEtd, lcDates: lcDates,
+    parsePromiseCell: parsePromiseCell, weeklyInFileChanges: weeklyInFileChanges, DIR_LABEL: DIR_LABEL,
+    VOYAGE_STEPS: VOYAGE_STEPS, voyageStepDone: voyageStepDone, voyageProgress: voyageProgress, DEFAULT_SUPPLIER_CHECKLIST: DEFAULT_SUPPLIER_CHECKLIST,
+    isOcAttachment: isOcAttachment, parseOcFileName: parseOcFileName, parseOcGrid: parseOcGrid, compareOcToPo: compareOcToPo,
+    parseTsv: parseTsv, LB_TO_KG: LB_TO_KG, bytesToBinary: bytesToBinary,
     crc32: crc32, makeZip: makeZip, makeSimplePdf: makeSimplePdf, ledgerRows: ledgerRows, pct: pct, num1: num1
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

@@ -199,8 +199,10 @@ test('발주 메일 초안: 템플릿 빈칸과 체크리스트 채움', () => {
   const db = sampleDb();
   db.settings.sender_name = 'Kim'; db.settings.sender_company = 'Our Co.';
   const d = L.poMailDraft({ po_no: 'EX4500010011' }, db.suppliers[0], db, null);
-  assert.equal(d.subject, '[PO EX4500010011] Purchase Order from Our Co.');
-  assert.ok(d.body.includes('Dear Anna Keller'));
+  // 2026-09-29 실제 발주 메일 구성: 'Purchase Order [업체코드] : PO / 업체명', OC 요청 일수(기본 7일)
+  assert.equal(d.subject, 'Purchase Order [EX-A01] : EX4500010011 / Alpha Precision GmbH (예시)');
+  assert.ok(d.body.includes('provide the O.A/O.C within 7 days'));
+  assert.ok(d.body.includes('PO NO: EX4500010011'));
   assert.ok(d.body.includes('- OC 에 EXW DATE 기재 요청'));
   assert.equal(d.cc, 'sales@alpha-precision.example.com');
 });
@@ -247,6 +249,208 @@ test('예시 PDF 는 %PDF 로 시작하고 xref 위치가 맞음', () => {
   assert.ok(s.startsWith('%PDF-1.4'));
   const x = Number(s.match(/startxref\n(\d+)/)[1]);
   assert.equal(s.slice(x, x + 4), 'xref');
+});
+
+// ─────────────────────────────────────────────────────────────
+// 2026-09-29 메일 자료(실물 PO·OC·회신 메일·주간 오더 현황·항차 매뉴얼) 반영분
+// 시험 입력은 모두 실물과 같은 배치의 예시값(sample-data.js)입니다.
+console.log('PO 번호 체계·PO 본문 읽기');
+test('영문 1자+숫자 9자리 PO 번호를 「PO」 낱말 없이도 찾고, 글 속 순서대로', () => {
+  assert.deepEqual(L.poNumbersIn('RE: Purchase Order [EX-E05] : O261110502, M261110501 / Echo').list, ['O261110502', 'M261110501']);
+  assert.deepEqual(L.poNumbersIn('INV 400181101 and X12345678901').list, []);   // 숫자만·자릿수 다른 것은 아님
+  assert.equal(L.poFromFileName('M261110501.pdf'), 'M261110501');
+});
+test('PDF 줄 배치(pdftotext -layout 형): PO·업체·품목 2줄·금액·납기·Mfr 품번', () => {
+  const r = L.parsePoText(S.realPoLines.join('\n'));
+  assert.equal(r.po_no, 'M261110501'); assert.equal(r.supplier, 'Echo Lighting Inc.');
+  assert.equal(r.po_date, '2026-09-01'); assert.equal(r.issued_date, '2026-09-01');
+  assert.deepEqual([r.currency, r.amount, r.incoterms, r.incoterms_place, r.origin], ['USD', 1970, 'EXW', 'Example Port', 'U.S.A']);
+  // 200×5.50 = 1,100 · 120×7.25 = 870 · 합 1,970 = Contract Amount → 경고 없음
+  assert.deepEqual(r.lines.map(l => [l.seq, l.part, l.qty, l.price, l.amount, l.delivery, l.mfr_part, l.desc]), [
+    [1, 'EX11-10001', 200, 5.5, 1100, '2026-10-30', 'EC-2001', 'LAMP-EXAMPLE A'],
+    [2, 'EX11-10002', 120, 7.25, 870, '2026-10-30', 'EC-2002', 'LAMP-EXAMPLE B']]);
+  assert.equal(r.delivery_date, '2026-10-30'); assert.deepEqual(r.warnings, []);
+});
+test('PDF 뷰어에서 복사한 열 단위 배치도 짝지어 읽음(Our Ref. 뒤 칸 이름 건너뜀)', () => {
+  const r = L.parsePoText(S.realPoPaste);
+  assert.equal(r.po_no, 'O261110502'); assert.deepEqual(r.refs, ['O261110502']);
+  assert.deepEqual(r.lines.map(l => [l.part, l.qty, l.price, l.amount, l.delivery, l.mfr_part]), [['EX22-20001', 60, 12, 720, '2026-10-15', 'EC-3001']]);
+  assert.deepEqual(r.warnings, []);
+});
+test('수량×단가 ≠ 금액, 합계 ≠ Contract Amount 이면 경고', () => {
+  const r = L.parsePoText(S.realPoLines.join('\n').replace('870      Oct', '900      Oct'));
+  assert.ok(r.warnings.some(w => /2번 줄/.test(w)));                 // 120×7.25=870 ≠ 900
+  assert.ok(r.warnings.some(w => /합계\(2000\)/.test(w)));           // 1100+900 = 2000 ≠ 1970
+});
+test('품목 요약: 첫 품번 외 n건', () => assert.equal(L.itemSummary(L.parsePoText(S.realPoLines.join('\n')).lines), 'EX11-10001 외 1건'));
+
+console.log('항차 매뉴얼 규칙');
+test('지역: U.S.A → 미국 60일, Germany → 유럽 90일, 중국 → 15일, 모름 → null', () => {
+  assert.deepEqual(L.transitDays('U.S.A', ST), { region: '미국', days: 60 });
+  assert.equal(L.transitDays('Germany', ST).days, 90);
+  assert.equal(L.transitDays('중국', ST).days, 15);
+  assert.equal(L.transitDays('Brazil', ST), null);
+});
+test('Delivery 2026-10-30 − 60일 = 2026-08-31, ETD 2026-09-10 + 60일 = 2026-11-09', () => {
+  assert.equal(L.exwTarget('2026-10-30', 'USA', ST), '2026-08-31');
+  assert.equal(L.etaFromEtd('2026-09-10', 'USA', ST), '2026-11-09');
+});
+test('L/C: 신청 2026-09-25(금) → 개설 09-29(화, 2영업일) → 최종선적 2027-03-29 → 유효 2027-04-19', () => {
+  assert.deepEqual(L.lcDates('2026-09-25'), { open: '2026-09-29', lastShipment: '2027-03-29', expiry: '2027-04-19' });
+  assert.equal(L.addMonths('2026-08-31', 6), '2027-02-28');       // 말일 보정
+});
+test('항차 체크리스트: 송부·OC·약속 EXW 가 있으면 자동 완료, L/C 는 선택 단계라 분모에서 뺌', () => {
+  const p = L.cleanPo({ po_no: 'M1', sent_date: '2026-09-01', oc_date: '2026-09-03' }, []);
+  const v0 = L.voyageProgress(p);
+  assert.equal(v0.total, L.VOYAGE_STEPS.length - 1); assert.equal(v0.done, 2); assert.equal(v0.next.key, 'po_delivery');
+  p.voyage.po_delivery = '2026-09-01'; p.exw_promised = '2026-10-20';
+  assert.equal(L.voyageProgress(p).done, 4); assert.equal(L.voyageProgress(p).next.key, 'docs_download');
+});
+test('대장 가져오기: 빈 품목 줄·빈 체크리스트로 기존 값을 지우지 않음', () => {
+  const lines = [{ part: 'A', qty: 1 }];
+  const r = L.upsertPos([L.cleanPo({ po_no: 'M1', lines: lines, voyage: { ci_check: '2026-09-01' } }, [])], [L.cleanPo({ po_no: 'M1', note: 'x' }, [])]);
+  assert.deepEqual(r.pos[0].lines, lines); assert.equal(r.pos[0].voyage.ci_check, '2026-09-01'); assert.equal(r.pos[0].note, 'x');
+});
+
+console.log('OC 회신 메일(.eml, 실물 구조)');
+const ocB64 = Buffer.from('fake-xls').toString('base64');
+const reply = L.parseEml(S.replyEml(TODAY, S.ocFiles.map(f => ({ name: f.name, b64: ocB64 }))), { tzOffsetMin: 540 });
+test('multipart/mixed ⊃ alternative: 제목(RFC 2047 섞임)·참조 한글 이름·본문(base64 plain)', () => {
+  assert.equal(reply.subject, 'RE: Purchase Order [EX-E05] : O261110502, M261110501 / Echo Lighting Inc. (예시)');
+  assert.ok(reply.cc.startsWith('김예시(Kim, Example)/사원/생산관리팀 <buyer@'));
+  assert.ok(reply.body.startsWith('Good afternoon,'));
+});
+test('받은 날: 전날 19:19 UTC → 한국 시간(+9)으로 오늘', () => assert.equal(reply.date, TODAY));
+test('첨부 2개: 파일명·크기(base64 해독)', () => {
+  assert.deepEqual(reply.attachments.map(a => [a.name, a.size, a.inline]), S.ocFiles.map(f => [f.name, 8, false]));
+  assert.equal(new TextDecoder().decode(reply.attachments[0].bytes), 'fake-xls');
+});
+test('RFC 2231 파일명(filename*=utf-8\'\'…)과 quoted-printable 본문', () => {
+  const raw = 'Subject: x\r\nContent-Type: multipart/mixed; boundary="b"\r\n\r\n--b\r\nContent-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n<p>OC =EC=A0=91=EC=88=98</p>\r\n--b\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename*=utf-8\'\'OC%20%ED%99%95%EC%9D%B8.pdf\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERg==\r\n--b--\r\n';
+  const m = L.parseEml(raw);
+  assert.equal(m.body.trim(), 'OC 접수'); assert.equal(m.attachments[0].name, 'OC 확인.pdf');
+});
+test('파일 바이트(Uint8Array)로 읽으면 8비트 본문도 charset 대로', () => {
+  const raw = 'Subject: t\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n오더 확인\r\n';
+  assert.equal(L.parseEml(L.utf8(raw)).body.trim(), '오더 확인');
+});
+
+console.log('OC 회신 분류·OC 엑셀 대조');
+function realDb() {
+  const db = sampleDb();
+  db.suppliers = L.mergeSuppliers(db.suppliers, L.importSuppliers(L.applyMapping([S.echoSupplier], L.guessMapping(Object.keys(S.echoSupplier), 'supplier'))).suppliers);
+  db.pos = db.pos.concat(S.realLedger(TODAY).map(p => L.cleanPo(p, db.suppliers)));
+  return db;
+}
+test('회신 메일 → Echo 업체, PO 2건, OC 첨부 2개, OC 수령일 후보 2건', () => {
+  const c = L.classifyMail(reply, realDb());
+  assert.equal(c.supplier_code, 'EX-E05'); assert.equal(c.supplier_via, 'email');
+  assert.deepEqual(c.pos.sort(), ['M261110501', 'O261110502']);
+  assert.deepEqual(c.ocFiles, S.ocFiles.map(f => f.name));
+  assert.deepEqual(c.ocCandidates.sort(), ['M261110501', 'O261110502']);
+  assert.ok(c.keywords.includes('order confirmation'));     // 본문은 복수형 'order confirmations'
+});
+test('발신 도메인이 마스터에 없어도 PO 번호가 한 업체 것이면 그 업체로(via po)', () => {
+  const db = realDb();
+  db.suppliers.forEach(s => { if (s.code === 'EX-E05') { s.to = 'x@other.example.com'; s.cc = ''; s.domains = 'other.example.com'; } });
+  const c = L.classifyMail(reply, db);
+  assert.equal(c.supplier_code, 'EX-E05'); assert.equal(c.supplier_via, 'po');
+  assert.equal(c.ocCandidates.length, 2);
+});
+test('대장에 없는 PO 번호는 따로 알림', () => {
+  const db = realDb(); db.pos = db.pos.filter(p => p.po_no !== 'O261110502');
+  assert.deepEqual(L.classifyMail(reply, db).unknownPos, ['O261110502']);
+});
+test('OC 첨부 판정: 파일명 OC·확장자, 본문 속 그림(inline)은 제외', () => {
+  assert.ok(L.isOcAttachment({ name: 'EX001 M261110501 OC 900101 10-20-26.xls' }));
+  assert.ok(!L.isOcAttachment({ name: 'image008.png', inline: true }));
+  assert.ok(!L.isOcAttachment({ name: 'DOCUMENT.xls' }));            // 'OC' 가 낱말 안에 있는 것은 아님
+});
+test('OC 파일명: OC 번호 900101, 날짜 10-20-26 → 2026-10-20(월-일-연), PO', () => {
+  assert.deepEqual(L.parseOcFileName(S.ocFiles[0].name), { oc_no: '900101', date: '2026-10-20', pos: ['M261110501'] });
+});
+test('OC 엑셀(16행 머리글) 읽기', () => {
+  const oc = L.parseOcGrid(S.ocGrid('M261110501'), S.ocFiles[0].name);
+  assert.equal(oc.is_oc, true); assert.equal(oc.oc_no, '900101'); assert.equal(oc.doc_date, '2026-10-20');
+  assert.deepEqual(oc.lines.map(l => [l.po, l.cust_part, l.sup_part, l.qty, l.price]), [['M261110501', 'EX11-10001', 'EC-2001', 200, 5.5], ['M261110501', 'EX11-10002', 'EC-2002', 100, 7.25]]);
+});
+test('파일명에 날짜가 없으면 서명란 날짜(엑셀 일련번호 46315 = 2026-10-20)', () => {
+  assert.equal(L.parseOcGrid(S.ocGrid('M261110501'), 'oc.xls').doc_date, '2026-10-20');
+});
+test('OC ↔ PO 대조: 수량 다름(120/100) 1건, 나머지 일치', () => {
+  const db = realDb();
+  const c = L.compareOcToPo(db.pos.find(p => p.po_no === 'M261110501'), L.parseOcGrid(S.ocGrid('M261110501'), S.ocFiles[0].name));
+  assert.equal(c.issues, 1); assert.equal(c.oc_date, '2026-10-20');
+  assert.deepEqual(c.rows.map(r => r.notes.map(n => n.text).join('; ')), ['일치', '수량 다름(PO 120 / OC 100)']);
+});
+test('OC ↔ PO 대조: 공급사 품번 다름·납기보다 늦은 출하 예정일(10-15 → 10-20, 5일)', () => {
+  const db = realDb();
+  const c = L.compareOcToPo(db.pos.find(p => p.po_no === 'O261110502'), L.parseOcGrid(S.ocGrid('O261110502'), S.ocFiles[1].name));
+  assert.deepEqual(c.rows[0].notes.map(n => n.text), ['공급사 품번 다름(PO Mfr EC-3001 / OC EC-3009)', 'OC 출하 예정일이 PO 납기보다 5일 늦음']);
+});
+test('OC 에 없는 PO 줄은 따로 표시', () => {
+  const oc = L.parseOcGrid(S.ocGrid('M261110501'), S.ocFiles[0].name); oc.lines.pop();
+  const c = L.compareOcToPo(realDb().pos.find(p => p.po_no === 'M261110501'), oc);
+  assert.equal(c.rows[1].notes[0].text, 'OC 에 없는 PO 줄');
+});
+test('묶음 발주 메일: 한 업체 PO 2건을 한 통에', () => {
+  const db = realDb();
+  const s = db.suppliers.find(x => x.code === 'EX-E05');
+  const d = L.poMailDraftGroup(db.pos.filter(p => p.supplier_code === 'EX-E05'), s, db, []);
+  assert.equal(d.subject, 'Purchase Order [EX-E05] : M261110501, O261110502 / Echo Lighting Inc. (예시)');
+  assert.ok(d.body.includes('PO NO: M261110501, O261110502'));
+});
+
+console.log('Weekly Order Status(실물 열 구성)');
+const wm = L.guessMapping(S.WOS_HEAD, 'weekly');
+test('열 짐작: Customer PO·Part No.·QTY·Promise Date·1OM#·SO#·Req Date·Status·Remarks', () => {
+  assert.deepEqual(wm, { po: 'Customer PO', part: 'Part No.', qty: 'QTY', promise: 'Promise Date', om: '1OM#', so: 'SO#', req: 'Req Date', status: 'Status', remarks: 'Remarks' });
+});
+test('Promise Date 칸: cancelled / 10/5/2026=>9/28 / 엑셀 일련번호', () => {
+  assert.equal(L.parsePromiseCell('cancelled').cancelled, true);
+  const c = L.parsePromiseCell('10/5/2026=>9/28'); assert.equal(c.prev, '2026-10-05'); assert.equal(c.date, '2026-09-28');
+  assert.equal(L.parsePromiseCell(46293).date, '2026-09-28');
+  assert.equal(L.parsePromiseCell('12/20/2026=>1/10').date, '2027-01-10');   // 해를 넘김
+});
+test('두 주차 비교: 밀림 +14, 당김 −7, 취소 1, 신규 1, 빠짐 1, 같음 1 — 같은 PO·품번 두 줄은 SO# 로 구분', () => {
+  const r = L.compareWeekly(L.applyMapping(S.weeklyWk37, wm), L.applyMapping(S.weeklyWk38, wm));
+  assert.deepEqual(r.changed.map(c => [c.po, c.so, c.old, c.new, c.diffDays, c.dir]), [
+    ['M261200011', '70001', '2026-09-30', '2026-10-14', 14, 'later'],
+    ['O261200020', '70010', '2026-10-05', '2026-09-28', -7, 'earlier'],
+    ['B261200030', '70020', '2026-10-20', 'cancelled', null, 'cancel']
+  ].sort((a, b) => (b[4] || 0) - (a[4] || 0)));
+  assert.deepEqual(r.added.map(x => x.po), ['M261200050']);
+  assert.deepEqual(r.removed.map(x => x.po), ['M261200040']);
+  assert.equal(r.same, 1);
+  assert.equal(r.duplicates.length, 1);                                    // 같은 PO·품번 여러 행 알림
+});
+test('SO# 가 바뀌면 PO·품번 나온 순서로 다시 맞춤(빠짐·신규로 쪼개지지 않음)', () => {
+  const a = [{ po: 'M1', part: 'P', so: '1', promise: '2026-10-01' }, { po: 'M1', part: 'P', so: '2', promise: '2026-10-05' }];
+  const b = [{ po: 'M1', part: 'P', so: '', promise: '2026-10-01' }, { po: 'M1', part: 'P', so: '2', promise: '2026-10-09' }];
+  const r = L.compareWeekly(a, b);
+  assert.equal(r.added.length, 0); assert.equal(r.removed.length, 0);
+  assert.deepEqual(r.changed.map(c => c.diffDays), [4]);
+});
+test('한 주 파일만: 칸 안 변경·Remarks 변경 기록(여러 번이면 처음→마지막)', () => {
+  const x = L.weeklyInFileChanges(L.applyMapping(S.weeklyWk38, wm));
+  assert.deepEqual(x.map(c => [c.po, c.source, c.old, c.new, c.diffDays]), [
+    ['M261200011', 'Remarks', '2026-09-30', '2026-10-14', 14],
+    ['O261200020', 'Promise Date 칸', '2026-10-05', '2026-09-28', -7],
+    ['B261200030', 'Promise Date 칸', '', 'cancelled', null]]);
+  const y = L.weeklyInFileChanges([{ po: 'M1', promise: '2026-07-21', remarks: 'Promise date 7/11=> 7/28 => 7/21' }]);
+  assert.deepEqual([y[0].old, y[0].new, y[0].diffDays], ['2026-07-11', '2026-07-21', 10]);
+});
+
+console.log('중량 입력 양식');
+test('붙여넣기(탭 구분, 머리글 있음) → 행', () => {
+  const t = L.parseTsv('Invoice No\tPart No\tGross Weight (kg)\nINV-1\tA\t10.5\nINV-1\tB\t4,000');
+  assert.deepEqual(t.headers, ['Invoice No', 'Part No', 'Gross Weight (kg)']);
+  const tot = L.packingTotals(L.applyMapping(t.rows, L.guessMapping(t.headers, 'packing')), false);
+  assert.equal(tot.groups[0].total, 4010.5);
+});
+test('머리글 없는 붙여넣기는 열1·열2…, lb → kg 환산 1000lb = 453.592kg', () => {
+  assert.deepEqual(L.parseTsv('A  12.5\nB  3').headers, ['열1', '열2']);
+  assert.equal(Math.round(1000 * L.LB_TO_KG * 1000) / 1000, 453.592);
 });
 
 console.log('\n' + passed + '개 통과' + (process.exitCode ? ' — 실패 있음' : ''));

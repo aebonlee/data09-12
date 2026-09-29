@@ -40,7 +40,7 @@
     var db = App.db;
     var rows = App.state.poRows = App.state.poRows || [];
     main.appendChild(App.pageHead('PO 발주 메일 초안'));
-    main.appendChild(h('p', null, 'PO PDF를 여러 개 올리면 파일명과 본문에서 PO 번호와 업체를 찾아, 업체별 수신·참조·제목·본문과 PO 첨부가 채워진 메일 초안(.eml)을 만듭니다. 초안을 더블클릭하면 Outlook에서 열리며, 확인한 뒤 직접 보내십시오.'));
+    main.appendChild(h('p', null, 'PO PDF를 여러 개 올리면 파일명과 본문에서 PO 번호·업체·품목 줄(품번·수량·단가·납기)을 읽어, 업체별 수신·참조·제목·본문과 PO 첨부가 채워진 메일 초안(.eml)을 만듭니다. 초안을 더블클릭하면 Outlook에서 열리며, 확인한 뒤 직접 보내십시오.'));
     var fileIn = h('input', { type: 'file', accept: '.pdf,application/pdf', multiple: true, style: 'display:none' });
     fileIn.addEventListener('change', function () { addFiles(Array.prototype.slice.call(fileIn.files)); fileIn.value = ''; });
     main.appendChild(h('div', { class: 'card' },
@@ -49,24 +49,47 @@
         h('button', { type: 'button', class: 'btn', onclick: sampleFiles }, '예시 PO PDF로 해 보기'),
         rows.length ? h('button', { type: 'button', class: 'btn btn-ghost', onclick: function () { App.state.poRows = []; App.render(); } }, '목록 비우기') : null),
       !db.suppliers.length ? h('div', { class: 'alert warn' }, '업체 마스터가 비어 있어 업체를 찾을 수 없습니다. 먼저 「업체」에서 Contact List를 올려 주십시오.') : null,
-      h('p', { class: 'note' }, 'PO 번호 찾기 규칙은 「설정」에서 바꿀 수 있습니다. 스캔본 PDF는 본문 글자를 읽을 수 없어 파일명으로만 찾습니다.')));
+      h('p', { class: 'note' }, 'PO 번호는 영문 1자 + 숫자 9자리(예: M·O·B로 시작)를 먼저 찾고, 다른 모양은 「설정」의 규칙으로 찾습니다. 스캔본 PDF는 본문 글자를 읽을 수 없어 파일명으로만 찾습니다.')));
+
+    // PDF 를 열 수 없는 환경(회사 PC 보안 등)이면 PDF 뷰어에서 전체 선택·복사한 글을 붙여넣어 읽습니다.
+    var paste = h('textarea', { rows: 6, placeholder: 'PDF 뷰어에서 구매발주서를 열고 Ctrl+A → Ctrl+C 한 글을 여기에 붙여넣어 주십시오.' });
+    main.appendChild(h('details', { class: 'card' },
+      h('summary', null, h('strong', null, 'PDF가 안 열리면 — 구매발주서 글 붙여넣기')),
+      h('p', { class: 'note' }, 'PDF 뷰어에서 복사하면 표가 열 단위로 끊겨 붙는데, 그 배치도 짝지어 읽습니다. 붙여넣은 PO는 첨부 파일이 없으니 초안을 연 뒤 PDF를 직접 첨부해 주십시오.'),
+      paste,
+      h('div', { class: 'btn-row' },
+        h('button', { type: 'button', class: 'btn btn-primary', onclick: function () {
+          if (!paste.value.trim()) { App.toast('붙여넣은 글이 없습니다.', true); return; }
+          App.state.poRows = rows.concat([fromText('(붙여넣기) ' + (L.parsePoText(paste.value).po_no || '번호 미확인'), paste.value, null, '')]); App.render();
+        } }, '붙여넣은 글 읽기'),
+        h('button', { type: 'button', class: 'btn', onclick: function () { paste.value = S.realPoPaste; } }, '예시 글 넣어 보기'))));
 
     if (!rows.length) return;
+    var group = App.state.poGroup !== false;
     main.appendChild(App.table([
       { label: '파일', cell: function (r) { return h('span', null, r.file, r.textLen === 0 ? h('small', { class: 'muted' }, ' (본문 글자 없음)') : null); } },
       { label: 'PO 번호', cell: function (r) { return h('input', { class: 'cell', value: r.po_no, 'aria-label': 'PO 번호', onchange: function (e) { r.po_no = e.target.value.trim(); App.render(); } }); } },
       { label: '업체', cell: function (r) { return App.supplierSelect(r.supplier_code, { 'aria-label': '업체', onchange: function (e) { r.supplier_code = e.target.value; App.render(); } }); } },
       { label: '수신(To)', cell: function (r) { var s = L.supplierByCode(db.suppliers, r.supplier_code); return s ? s.to : ''; } },
+      { label: '품목·납기', cell: function (r) {
+        var p = r.parsed;
+        if (!p || !p.lines.length) return h('small', { class: 'muted' }, '품목 줄 없음');
+        return h('span', null, p.lines.length + '줄 · ' + (p.currency || '') + ' ' + (p.amount == null ? '' : p.amount.toLocaleString('en-US')), h('br'),
+          h('small', { class: 'muted' }, 'PO 납기 ' + (p.delivery_date || '-')), ' ', h('button', { type: 'button', class: 'chip', onclick: function () { showLines(r); } }, '보기'));
+      } },
       { label: '확인 사항', cell: function (r) { var is = poIssues(r); return is.length ? is.map(function (x) { return h('span', { class: 'badge warn' }, x); }) : h('span', { class: 'badge ok' }, '준비됨'); } },
       { label: '', cell: function (r) { return h('button', { type: 'button', class: 'btn', disabled: !r.po_no || !r.supplier_code, onclick: function () { App.saveEml(draftOf(r)); } }, '초안'); } }
     ], rows, function (r) { return { class: poIssues(r).length ? 'row-bad' : 'row-ok' }; }));
 
     var ready = rows.filter(function (r) { return r.po_no && r.supplier_code; });
     main.appendChild(h('div', { class: 'card', style: 'margin-top:16px' },
-      h('p', null, '초안을 만들 수 있는 PO ' + ready.length + '건 / 전체 ' + rows.length + '건'),
+      h('p', null, '초안을 만들 수 있는 PO ' + ready.length + '건 / 전체 ' + rows.length + '건' + (group ? ' → 업체별로 묶으면 메일 ' + groupsOf(ready).length + '통' : '')),
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: group, onchange: function (e) { App.state.poGroup = e.target.checked; App.render(); } }),
+        '같은 업체의 PO는 메일 한 통에 묶기(제목·본문에 PO 번호를 쉼표로 나열, PDF 모두 첨부)'),
       h('div', { class: 'btn-row' },
         h('button', { type: 'button', class: 'btn btn-primary', disabled: !ready.length, onclick: function () {
-          App.saveEmlZip(ready.map(draftOf), (db._sample ? '예시데이터_' : '') + '발주메일초안_' + App.today() + '.zip');
+          var drafts = group ? groupsOf(ready).map(function (g) { return groupDraft(g); }) : ready.map(draftOf);
+          App.saveEmlZip(drafts, (db._sample ? '예시데이터_' : '') + '발주메일초안_' + App.today() + '.zip');
         } }, '메일 초안 모두 내려받기(ZIP)'),
         h('button', { type: 'button', class: 'btn', disabled: !ready.length, onclick: function () { register(false); } }, '관리 대장에 등록'),
         h('button', { type: 'button', class: 'btn', disabled: !ready.length, onclick: function () { register(true); } }, '보낸 것으로 기록(송부일 오늘)')),
@@ -76,9 +99,38 @@
       var s = L.supplierByCode(db.suppliers, r.supplier_code);
       return L.poMailDraft({ po_no: r.po_no }, s, db, r.bytes ? { name: r.file, type: 'application/pdf', bytes: r.bytes } : null);
     }
+    function groupsOf(list) {
+      var g = {}, order = [];
+      list.forEach(function (r) { if (!g[r.supplier_code]) { g[r.supplier_code] = []; order.push(r.supplier_code); } g[r.supplier_code].push(r); });
+      return order.map(function (c) { return g[c]; });
+    }
+    function groupDraft(list) {
+      var s = L.supplierByCode(db.suppliers, list[0].supplier_code);
+      return L.poMailDraftGroup(list.map(function (r) { return { po_no: r.po_no }; }), s, db,
+        list.filter(function (r) { return r.bytes; }).map(function (r) { return { name: r.file, type: 'application/pdf', bytes: r.bytes }; }));
+    }
+    function showLines(r) {
+      var p = r.parsed, s = L.supplierByCode(db.suppliers, r.supplier_code);
+      var country = (s && s.country) || p.origin;
+      var t = L.transitDays(country, db.settings);
+      App.dialog('PO ' + (p.po_no || r.po_no) + ' 품목', h('div', null,
+        h('p', null, (p.supplier || '-') + ' · 발주일 ' + (p.po_date || '-') + ' · ' + (p.currency || '') + ' ' + (p.amount == null ? '-' : p.amount.toLocaleString('en-US')) + (p.incoterms ? ' · ' + p.incoterms + ' ' + p.incoterms_place : '')),
+        App.table([
+          { label: '#', cell: function (l) { return l.seq; } }, { label: '품번', cell: function (l) { return l.part; } },
+          { label: 'Mfr 품번', cell: function (l) { return l.mfr_part; } }, { label: '설명', cell: function (l) { return l.desc; } },
+          { label: '수량', cell: function (l) { return l.qty + ' ' + l.unit; } }, { label: '단가', cell: function (l) { return l.price; } },
+          { label: '금액', cell: function (l) { return l.amount == null ? '' : l.amount.toLocaleString('en-US'); } }, { label: '납기', cls: 'nowrap', cell: function (l) { return l.delivery; } }
+        ], p.lines),
+        t && p.delivery_date ? h('p', { class: 'note' }, '참고(항차 매뉴얼): 이 납기가 SRM PO Sheet의 Delivery Date라면 Incoterms Date = ' + p.delivery_date + ' − ' + t.region + ' 평균 운송기간 ' + t.days + '일 = ' + L.exwTarget(p.delivery_date, country, db.settings)) : null,
+        p.warnings.length ? h('div', { class: 'alert warn' }, p.warnings.join(' / ')) : null));
+    }
     function register(sent) {
       var today = App.today();
-      var inc = ready.map(function (r) { return L.cleanPo({ po_no: r.po_no, supplier_code: r.supplier_code, po_date: today, sent_date: sent ? today : '' }, db.suppliers); });
+      var inc = ready.map(function (r) {
+        var p = r.parsed || { lines: [] };
+        return L.cleanPo({ po_no: r.po_no, supplier_code: r.supplier_code, po_date: p.po_date || today, sent_date: sent ? today : '',
+          lines: p.lines, delivery_date: p.delivery_date, item: L.itemSummary(p.lines) }, db.suppliers);
+      });
       var res = L.upsertPos(db.pos, inc);
       db.pos = res.pos; App.save();
       App.toast('대장 추가 ' + res.added + '건, 갱신 ' + res.updated + '건' + (sent ? ' · 송부일 ' + today : ''));
@@ -95,13 +147,21 @@
     }
   };
 
+  // PDF 글(또는 붙여넣은 글) → 목록 한 줄. 구매발주서 양식이면 품목 줄까지 읽습니다.
+  function fromText(name, text, bytes, err) {
+    var db = App.db;
+    var m = L.matchPoFile({ name: name, text: text }, db.suppliers, db.settings);
+    var parsed = L.parsePoText(text);
+    var po = m.po_no;
+    if (parsed.refs.length && (!po || /^\(붙여넣기\)/.test(name))) po = parsed.po_no;
+    var sup = m.supplier_code;
+    if (!sup && parsed.supplier) { var f = L.findSupplierInText(db.suppliers, parsed.supplier); sup = f ? f.code : ''; }
+    var mis = m.issues.filter(function (i) { return /파일명과 본문/.test(i); })[0] || '';
+    return { file: name, bytes: bytes, po_no: po, supplier_code: sup, textLen: text.trim().length, nameTextMismatch: mis, textError: err, parsed: parsed };
+  }
   function analyse(name, bytes) {
-    return pdfText(bytes).then(function (t) { return { text: t, err: '' }; }, function (e) { return { text: '', err: '본문을 읽지 못함(' + e.message + ')' }; })
-      .then(function (x) {
-        var m = L.matchPoFile({ name: name, text: x.text }, App.db.suppliers, App.db.settings);
-        var mis = m.issues.filter(function (i) { return /파일명과 본문/.test(i); })[0] || '';
-        return { file: name, bytes: bytes, po_no: m.po_no, supplier_code: m.supplier_code, textLen: x.text.trim().length, nameTextMismatch: mis, textError: x.err };
-      });
+    return pdfText(bytes).then(function (t) { return { text: t, err: '' }; }, function (e) { return { text: '', err: '본문을 읽지 못함(' + e.message + ') — 글 붙여넣기를 써 주십시오' }; })
+      .then(function (x) { return fromText(name, x.text, bytes, x.err); });
   }
   App.analysePdf = analyse;
 
@@ -155,7 +215,9 @@
         { label: '업체', cell: function (p) { return App.supplierName(p.supplier_code); } },
         { label: '송부일', cls: 'nowrap', cell: function (p) { return p.sent_date; } },
         { label: 'OC 수령일', cls: 'nowrap', cell: function (p) { return p.oc_date; } },
-        { label: '약속 EXW', cls: 'nowrap', cell: function (p) { return p.exw_promised; } },
+        { label: '약속 EXW', cls: 'nowrap', cell: function (p) {
+          return h('span', null, p.exw_promised || '-', p.delivery_date ? h('br') : null, p.delivery_date ? h('small', { class: 'muted' }, 'PO 납기 ' + p.delivery_date) : null);
+        } },
         { label: '실제 출고', cls: 'nowrap', cell: function (p) {
           if (!p.exw_actual) return '';
           var d = L.daysBetween(p.exw_promised, p.exw_actual);
@@ -163,6 +225,10 @@
         } },
         { label: 'A/N·서류', cell: function (p) { return (p.an_received ? 'A/N ✓' : 'A/N -') + ' / ' + (p.docs_received ? '서류 ✓' : '서류 -'); } },
         { label: '상태', cell: function (p) { return App.badges(L.poFlags(p, today, db.settings)); } },
+        { label: '항차', cell: function (p) {
+          var v = L.voyageProgress(p);
+          return h('span', null, v.done + '/' + v.total, v.next ? h('br') : null, v.next ? h('small', { class: 'muted' }, '다음: ' + v.next.group) : null);
+        } },
         { label: '', cell: function (p) {
           return h('div', { class: 'btn-row' },
             p.sent_date && !p.oc_date ? h('button', { type: 'button', class: 'btn', onclick: function () { p.oc_date = today; App.save(); App.render(); App.toast(p.po_no + ' OC 수령일 ' + today); } }, 'OC 오늘 수령') : null,
@@ -179,7 +245,9 @@
     f.po_no = h('input', { type: 'text', value: p.po_no });
     f.supplier_code = App.supplierSelect(p.supplier_code);
     f.item = h('input', { type: 'text', value: p.item });
-    ['po_date', 'sent_date', 'oc_date', 'exw_promised', 'exw_actual', 'etd'].forEach(function (k) { f[k] = h('input', { type: 'date', value: p[k] }); });
+    f.oc_no = h('input', { type: 'text', value: p.oc_no || '' });
+    ['po_date', 'sent_date', 'oc_date', 'exw_promised', 'exw_actual', 'etd', 'delivery_date'].forEach(function (k) { f[k] = h('input', { type: 'date', value: p[k] || '' }); });
+    var voyage = Object.assign({}, p.voyage || {});
     f.an_received = h('input', { type: 'checkbox', checked: p.an_received });
     f.docs_received = h('input', { type: 'checkbox', checked: p.docs_received });
     f.note = h('textarea', { rows: 3 }); f.note.value = p.note || '';
@@ -187,10 +255,15 @@
     var content = h('div', null,
       h('div', { class: 'form-grid' },
         App.field('PO 번호', f.po_no), App.field('업체', f.supplier_code), App.field('품목·품번', f.item), App.field('발주일', f.po_date),
-        App.field('송부일', f.sent_date), App.field('OC 수령일', f.oc_date, '공급사 회신 메일을 받은 날(가정)'),
-        App.field('약속 EXW DATE', f.exw_promised), App.field('실제 출고일', f.exw_actual), App.field('선적 예정일(ETD)', f.etd),
+        App.field('송부일', f.sent_date), App.field('OC 수령일', f.oc_date, '공급사 회신 메일을 받은 날'),
+        App.field('OC 번호', f.oc_no), App.field('PO 납기', f.delivery_date, '구매발주서의 Contract Delivery Date'),
+        App.field('약속 EXW DATE', f.exw_promised, 'OC DATE(출하 예정일) — 매뉴얼상 SRM EXW DATE에 넣는 값'), App.field('실제 출고일', f.exw_actual), App.field('선적 예정일(ETD)', f.etd),
         h('div', null, h('label', { class: 'check' }, f.an_received, 'A/N 수신'), h('label', { class: 'check' }, f.docs_received, '선적서류 수신')),
         h('div', { class: 'span-all' }, App.field('메모', f.note))),
+      p.lines && p.lines.length ? h('details', { class: 'card', style: 'margin:16px 0 0' }, h('summary', null, h('strong', null, 'PO 품목 ' + p.lines.length + '줄')),
+        App.table([{ label: '품번', cell: function (l) { return l.part; } }, { label: 'Mfr 품번', cell: function (l) { return l.mfr_part; } },
+          { label: '수량', cell: function (l) { return l.qty; } }, { label: '단가', cell: function (l) { return l.price; } }, { label: '납기', cls: 'nowrap', cell: function (l) { return l.delivery; } }], p.lines)) : null,
+      voyageBox(p, voyage, f),
       !isNew ? h('div', { class: 'card', style: 'margin:16px 0 0' }, h('h3', null, '상황별 메일 초안'),
         h('div', { class: 'btn-row' }, tplSel, h('button', { type: 'button', class: 'btn', onclick: function () {
           var s = L.supplierByCode(db.suppliers, p.supplier_code);
@@ -201,14 +274,54 @@
     if (!isNew) buttons.push({ label: '삭제', danger: true, onClick: function () { db.pos = db.pos.filter(function (x) { return x !== p; }); App.save(); App.render(); } });
     buttons.push({ label: '저장', primary: true, onClick: function () {
       var v = {}; Object.keys(f).forEach(function (k) { v[k] = f[k].type === 'checkbox' ? f[k].checked : f[k].value; });
+      v.lines = p.lines || []; v.voyage = voyage; v.followup_date = p.followup_date || '';
       var np = L.cleanPo(v, db.suppliers);
       if (!np.po_no) { App.toast('PO 번호를 입력해 주십시오.', true); return false; }
       if (np.po_no !== p.po_no && db.pos.some(function (x) { return x.po_no === np.po_no; })) { App.toast('이미 있는 PO 번호입니다.', true); return false; }
-      np.followup_date = p.followup_date || '';
       if (isNew) db.pos.push(np); else db.pos[db.pos.indexOf(p)] = np;
       App.save(); App.render();
     } });
     App.dialog(isNew ? 'PO 추가' : 'PO ' + p.po_no, content, buttons);
+  }
+
+  // 항차 체크리스트(항차 업무 매뉴얼 단계) + ETA·L/C 일정 계산
+  function voyageBox(p, voyage, f) {
+    var db = App.db, today = App.today();
+    var s = L.supplierByCode(db.suppliers, p.supplier_code);
+    var country = s ? s.country : '';
+    var t = L.transitDays(country, db.settings);
+    var box = h('details', { class: 'card', style: 'margin:16px 0 0' });
+    var prog = L.voyageProgress(Object.assign({}, p, { voyage: voyage }));
+    box.appendChild(h('summary', null, h('strong', null, '항차 체크리스트 ' + prog.done + '/' + prog.total)));
+    box.appendChild(h('p', { class: 'note' }, '항차 업무 매뉴얼의 단계입니다. 송부·OC 수령·약속 EXW·선적서류 수신은 대장 값으로 자동 체크됩니다. 체크하면 오늘 날짜가 남습니다(저장해야 반영).'));
+    var group = '';
+    L.VOYAGE_STEPS.forEach(function (st) {
+      if (st.group !== group) { group = st.group; box.appendChild(h('h3', { style: 'margin-top:10px' }, group)); }
+      var auto = st.auto && !voyage[st.key] ? L.voyageStepDone(p, st) : '';
+      var cb = h('input', { type: 'checkbox', checked: !!(voyage[st.key] || auto), disabled: !!auto, onchange: function (e) {
+        if (e.target.checked) voyage[st.key] = today; else delete voyage[st.key];
+        stamp.textContent = voyage[st.key] ? ' (' + voyage[st.key] + ')' : '';
+      } });
+      var stamp = h('small', { class: 'muted' }, voyage[st.key] ? ' (' + voyage[st.key] + ')' : auto ? ' (대장 값)' : '');
+      box.appendChild(h('label', { class: 'check', style: 'display:flex' }, cb, h('span', null, st.label, stamp)));
+    });
+    // ETA 계산: ETD(없으면 B/L Date) + 지역 평균 운송기간
+    var etaOut = h('p', { class: 'note' });
+    function eta() {
+      var etd = f.etd.value;
+      etaOut.textContent = !t ? '업체 국가가 비어 있거나 매뉴얼 지역(미국·유럽·일본·중국·인도)에 없어 ETA를 계산하지 않았습니다.' :
+        etd ? 'ETA 계산: ETD ' + etd + ' + ' + t.region + ' 평균 운송기간 ' + t.days + '일 = ' + L.etaFromEtd(etd, country, db.settings) : 'ETD(선적 예정일)를 넣으면 ETA를 계산합니다(' + t.region + ' ' + t.days + '일).';
+    }
+    f.etd.addEventListener('change', eta); eta();
+    box.appendChild(h('h3', { style: 'margin-top:10px' }, 'ETA · L/C 일정 계산'));
+    box.appendChild(etaOut);
+    var lcIn = h('input', { type: 'date', value: voyage.lc_request || '' });
+    var lcOut = h('p', { class: 'note' });
+    function lc() { if (lcIn.value) voyage.lc_request = lcIn.value; var d = L.lcDates(lcIn.value); lcOut.textContent = lcIn.value ? 'L/C 개설일 ' + d.open + ' · 최종선적일 ' + d.lastShipment + ' · 유효기일 ' + d.expiry : ''; }
+    lcIn.addEventListener('change', lc); lc();
+    box.appendChild(App.field('L/C 개설 신청일(해당 업체만)', lcIn, '개설일 = 신청일 + 2영업일(주말만 뺌, 공휴일 미반영), 최종선적일 = 개설일 + 6개월, 유효기일 = 최종선적일 + 3주'));
+    box.appendChild(lcOut);
+    return box;
   }
 
   /* ── OC 팔로우업 ─────────────────────────────── */

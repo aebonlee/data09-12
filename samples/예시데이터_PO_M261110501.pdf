@@ -1,0 +1,53 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 1272 >>
+stream
+BT /F1 12 Tf 60 780 Td 16 TL
+(EXAMPLE BUYER CO.,LTD \(SAMPLE\)) Tj T*
+(To       Echo Lighting Inc.                        Date          2026-09-01 \(TUE\)) Tj T*
+(Fax                                                Our Ref.      M261110501) Tj T*
+(Attn.    Emma Stone                                Prepared by   SAMPLE BUYER) Tj T*
+(Subject: Purchase Order \(M261110501\)) Tj T*
+(Seller's name : Echo Lighting Inc.) Tj T*
+(Address : 100 Example Road, Sample City, USA) Tj T*
+(Contract No. : M261110501) Tj T*
+(Issued Date : SEP 01, 2026) Tj T*
+(1. Scope of Supply and Specification) Tj T*
+(SEQ   PART NO.     UNIT  Q'ty  Currency  PRICE   AMOUNT   Contract Delivery Date  REMARK) Tj T*
+(ITEM DESCRIPTION) Tj T*
+(1     EX11-10001   EA    200   USD       5.50    1,100    Oct 30, 2026) Tj T*
+(LAMP-EXAMPLE A [Mfr Part Number : EC-2001]) Tj T*
+(2     EX11-10002   EA    120   USD       7.25    870      Oct 30, 2026) Tj T*
+(LAMP-EXAMPLE B [Mfr Part Number : EC-2002]) Tj T*
+(2. Contract Amount : USD 1,970 EXW Example Port, Incoterms 2010) Tj T*
+(3. Payment Terms : Telegraphic Transfer within thirty \(30\) days after receiving shipping documents) Tj T*
+(4. Country of Origin : U.S.A) Tj T*
+(The country of origin stated above indicates the country of manufacture.) Tj T*
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1635
+%%EOF

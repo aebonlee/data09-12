@@ -224,7 +224,7 @@
       if (miss.length) { App.toast('필수 열을 연결해 주십시오: ' + miss.join(', '), true); return; }
       App.db.mappings = App.db.mappings || {};
       if (st.wb) { App.db.mappings[kind] = Object.assign({}, st.mapping); App.save(); }
-      opts.onApply(L.applyMapping(st.rows, st.mapping), { name: st.name, mapping: st.mapping, isSample: !st.wb });
+      opts.onApply(L.applyMapping(st.rows, st.mapping), { name: st.name, sheet: st.wb && st.wb.sheetNames.length > 1 ? st.sheet : '', mapping: st.mapping, isSample: !st.wb });
     }
     return box;
   };
@@ -262,7 +262,9 @@
       db.suppliers = L.importSuppliers(L.applyMapping(S.contactRows, map)).suppliers;
       db.pos = S.ledger(App.today()).map(function (p) { return L.cleanPo(p, db.suppliers); });
       db._sample = true;
-      App.db = db; App.save(); App.toast('예시 데이터를 불러왔습니다.'); App.render();
+      App.db = db; App.save();
+      App.ensureEcho();   // 실물 양식 예시(Echo 업체, OC 대기 PO 2건)
+      App.toast('예시 데이터를 불러왔습니다.'); App.render();
     }
     if (App.db.suppliers.length || App.db.pos.length) {
       App.dialog('예시 데이터 불러오기', h('p', null, '지금 들어 있는 업체·PO를 지우고 예시 데이터로 바꿉니다. 설정과 메일 템플릿은 그대로 둡니다. 계속하시겠습니까?'),
@@ -290,18 +292,19 @@
     main.appendChild(h('div', { class: 'card' }, h('h2', null, '업무 순서'),
       h('ol', { class: 'steps' },
         step('#/suppliers', '업체', 'Contact List 엑셀을 올려 업체 마스터(수신·참조·체크리스트)를 만듭니다.'),
-        step('#/po', 'PO 발주 메일', 'PO PDF 여러 개를 올리면 PO 번호·업체를 찾아 발주 메일 초안(.eml)을 한 번에 만듭니다.'),
-        step('#/ledger', '관리 대장', '송부일·OC 수령일·약속/실제 EXW DATE·A/N·선적서류를 기록합니다.'),
-        step('#/mail', '메일 분류', '받은 회신 메일(.eml)을 업체별로 나누고, OC 회신이면 수령일을 대장에 넣습니다.'),
+        step('#/po', 'PO 발주 메일', 'PO PDF 여러 개(또는 복사한 글)에서 PO 번호·업체·품목 줄을 읽어, 업체별로 묶은 발주 메일 초안(.eml)을 한 번에 만듭니다.'),
+        step('#/ledger', '관리 대장', '송부일·OC 수령일·약속/실제 EXW DATE·A/N·선적서류와 항차 체크리스트(매뉴얼 단계)를 기록합니다.'),
+        step('#/mail', '메일 분류·OC 확인', '받은 회신 메일(.eml)을 업체별로 나누고, OC 회신이면 수령일을 대장에 넣습니다. 첨부된 OC 엑셀은 PO 품목(수량·단가·품번)과 대조하고 OC DATE를 약속 EXW DATE로 넣습니다.'),
         step('#/followup', 'OC 팔로우업', 'OC 미접수 건을 업체별로 묶어 팔로우업 메일 초안을 만듭니다.'),
         step('#/kpi', '접수율·준수율', 'OC 접수율, EXW 준수율(%), 평균 지연일을 전체·업체별로 봅니다.'),
-        step('#/promise', 'Promise Date', 'Weekly Order Status 엑셀 두 주차를 비교해 Promise Date가 바뀐 건을 찾습니다.'),
+        step('#/promise', 'Promise Date', 'Cummins Weekly Order Status 두 주차(시트)를 비교해 Promise Date가 밀림·당김·취소된 줄을 찾습니다. 한 주차뿐이면 파일 안 변경 기록을 모읍니다.'),
         step('#/weight', '중량 대조', 'Packing List 자재 합중량과 B/L 중량이 맞는지 확인합니다.'))));
     main.appendChild(h('div', { class: 'card' }, h('h2', null, '1단계에서 하지 않는 것'),
       h('ul', null,
         h('li', null, '메일 자동 발송·메일함 직접 연결 — 초안 파일만 만들고, 보내기는 사람이 Outlook에서 합니다.'),
         h('li', null, 'HD360 페이지 자동 조회 — 내려받을 수 있는 자료가 있으면 관리 대장 가져오기로 연결할 예정입니다.'),
-        h('li', null, 'B/L·Packing List PDF에서 중량 자동 추출 — 1단계는 Packing List 엑셀과 B/L 중량 직접 입력입니다.'),
+        h('li', null, 'B/L·Packing List PDF에서 중량 자동 추출 — 실물 샘플을 받기 전이라 Packing List 엑셀·표 붙여넣기와 B/L 중량 직접 입력입니다.'),
+        h('li', null, 'SRM·SAP·HD360 화면 자동 입력 — 도구는 넣을 값과 순서(항차 체크리스트)를 정리해 주고, 입력은 사람이 합니다.'),
         h('li', null, 'Outlook .msg 파일 읽기 — 1단계는 .eml 파일만 읽습니다.'))));
     function tile(k, v, s, danger) { return h('div', { class: 'tile' + (danger ? ' danger' : '') }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v), h('div', { class: 's' }, s)); }
     function step(href, name, text) { return h('li', null, h('a', { href: href }, name), ' — ' + text); }
@@ -363,7 +366,11 @@
       var content = h('div', { class: 'form-grid' },
         App.field('업체 코드', f.code), App.field('업체명', f.name), App.field('담당자', f.contact), App.field('전화', f.phone),
         App.field('수신 이메일(To) — 여러 개는 ; 로', f.to), App.field('참조 이메일(CC)', f.cc), App.field('국가', f.country),
-        h('div', { class: 'span-all' }, App.field('체크리스트·특이사항 (한 줄에 하나)', f.checklist, '발주 메일과 선적서류 요청 메일에 「Please note」로 함께 들어갑니다.')));
+        h('div', { class: 'span-all' }, App.field('체크리스트·특이사항 (한 줄에 하나)', f.checklist, '발주 메일과 선적서류 요청 메일에 「Please note」로 함께 들어갑니다.'),
+          h('div', { class: 'btn-row' }, h('button', { type: 'button', class: 'btn', onclick: function () {
+            f.checklist.value = (f.checklist.value.trim() ? f.checklist.value.trim() + '\n' : '') + L.DEFAULT_SUPPLIER_CHECKLIST;
+          } }, '구매발주서 조건으로 기본 항목 넣기')),
+          h('p', { class: 'note' }, '기본 항목은 실제 구매발주서의 조건(원산지 표기, Shipping Mark, Invoice 기재 사항, 선적 후 5일 이내 서류, ISPM 15 목재 포장)과 「OC 7일 이내」 요청에서 뽑았습니다. 업체에 맞지 않는 줄은 지워 주십시오.')));
       var buttons = [{ label: '취소' }];
       if (!isNew) buttons.push({ label: '삭제', danger: true, onClick: function () {
         if (db.pos.some(function (p) { return p.supplier_code === s.code; })) { App.toast('이 업체의 PO가 대장에 있어 삭제하지 않았습니다.', true); return; }
@@ -402,7 +409,13 @@
         App.field('EXW 임박 일수', inp('exw_soon_days', 'number'), '약속 EXW DATE까지 이 일수 이하면 「EXW 임박」'),
         App.field('EXW 허용 일수', inp('exw_grace_days', 'number'), '실제 출고가 약속일 + 이 일수 이내면 「준수」'),
         App.field('중량 허용 오차(kg)', inp('weight_tol_kg', 'number')),
-        App.field('중량 허용 오차(%)', inp('weight_tol_pct', 'number'), 'kg·% 중 큰 쪽까지 허용'))));
+        App.field('중량 허용 오차(%)', inp('weight_tol_pct', 'number'), 'kg·% 중 큰 쪽까지 허용'),
+        App.field('발주 메일의 OC 요청 일수', inp('oc_request_days', 'number'), '메일 문안 {OC_DAYS}. 실제 메일은 「within 7 days」 — OC 대기 일수도 7일로 맞출지 확인해 주십시오'))));
+    main.appendChild(h('div', { class: 'card' }, h('h2', null, '지역별 평균 운송기간(일)'),
+      h('p', { class: 'note' }, '항차 업무 매뉴얼의 표 값입니다. 업체의 「국가」로 지역을 찾아 ETA(= ETD + 운송기간)와 Incoterms Date(= Delivery Date − 운송기간) 참고값을 계산합니다.'),
+      h('div', { class: 'form-grid cols-4' },
+        App.field('미국', inp('transit_us', 'number')), App.field('유럽', inp('transit_eu', 'number')),
+        App.field('일본·중국', inp('transit_jpcn', 'number')), App.field('인도', inp('transit_in', 'number')))));
     var rxTest = h('input', { type: 'text', placeholder: '예: PO No.: 4500012345' });
     var rxOut = h('p', { class: 'note' });
     function testRx() { var r = L.poNumbersIn(rxTest.value, f.po_regex.value.trim()); rxOut.textContent = r.error || ('찾은 PO 번호: ' + (r.list.join(', ') || '없음')); }
@@ -419,7 +432,7 @@
 
     // 메일 템플릿
     var tcard = h('div', { class: 'card' }, h('h2', null, '메일 템플릿'),
-      h('p', { class: 'note' }, '빈칸: {PO} {PO_LIST} {SUPPLIER} {CONTACT} {EXW} {CHECKLIST} {SENDER} {DEPT} {COMPANY}. 지금 문안은 일반적인 영문 예시이며, 실제 사내 문안을 받으면 바꿔 넣습니다.'));
+      h('p', { class: 'note' }, '빈칸: {PO} {PO_LIST} {SUPPLIER} {CODE}(업체 코드) {CONTACT} {EXW} {OC_DAYS} {CHECKLIST} {SENDER} {DEPT} {COMPANY}. 발주 메일은 받은 실제 메일의 제목·문안 구성을 따랐고, 나머지는 일반적인 영문 예시입니다.'));
     L.TEMPLATE_KEYS.forEach(function (t) {
       var subj = h('input', { type: 'text', value: db.templates[t.key].subject });
       var body = h('textarea', { rows: 8 }); body.value = db.templates[t.key].body;
