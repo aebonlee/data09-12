@@ -107,6 +107,22 @@ create table if not exists public.purchase_order (
 );
 create index if not exists purchase_order_supplier_idx on public.purchase_order (owner_id, supplier_code);
 
+-- 2026-09-29 메일 자료 반영분 — 이미 만든 표에도 붙도록 add column if not exists (재실행 안전)
+alter table public.workspace add column if not exists oc_request_days int not null default 7 check (oc_request_days >= 0);  -- 발주 메일의 OC 요청 일수
+alter table public.workspace add column if not exists transit_us   int not null default 60 check (transit_us >= 0);    -- 항차 매뉴얼 지역별 평균 운송기간(일)
+alter table public.workspace add column if not exists transit_eu   int not null default 90 check (transit_eu >= 0);
+alter table public.workspace add column if not exists transit_jpcn int not null default 15 check (transit_jpcn >= 0);
+alter table public.workspace add column if not exists transit_in   int not null default 45 check (transit_in >= 0);
+alter table public.workspace alter column oc_keywords set default 'order confirmation, order acknowledgement, OC, confirmation, O.A/O.C';
+
+alter table public.purchase_order add column if not exists delivery_date date;                          -- PO 납기(구매발주서 Contract Delivery Date)
+alter table public.purchase_order add column if not exists oc_no         text not null default '';      -- 공급사 OC 번호
+alter table public.purchase_order add column if not exists followup_date date;                          -- 마지막 OC 팔로우업
+alter table public.purchase_order add column if not exists lines         jsonb not null default '[]'::jsonb   -- PO 품목 줄
+  check (jsonb_typeof(lines) = 'array');
+alter table public.purchase_order add column if not exists voyage        jsonb not null default '{}'::jsonb   -- 항차 체크리스트 {단계: 완료일}
+  check (jsonb_typeof(voyage) = 'object');
+
 -- ----------------------------------------------------------------------------
 -- 2. 함수 · 트리거
 --

@@ -208,6 +208,12 @@ begin
     '23514', 'OC 대기 일수는 음수가 될 수 없다');
   perform public._assert_raises($s$update public.workspace set weight_tol_pct = 150$s$,
     '23514', '중량 허용 오차(%)는 0~100 이다');
+  -- 2026-09-29 추가 칸: 품목 줄은 배열, 항차 체크리스트는 객체만, 운송기간 기본값은 매뉴얼 값
+  perform public._assert_raises($s$insert into public.purchase_order (po_no, lines) values ('M269990001', '{}'::jsonb)$s$,
+    '23514', 'PO 품목 줄(lines)은 JSON 배열이다');
+  perform public._assert_raises($s$insert into public.purchase_order (po_no, voyage) values ('M269990002', '[]'::jsonb)$s$,
+    '23514', '항차 체크리스트(voyage)는 JSON 객체다');
+  perform public._assert_eq((select transit_us from public.workspace limit 1), 60, '미국 운송기간 기본 60일');
   perform public._assert_raises($s$insert into public.workspace default values$s$,
     '23505', '작업 공간은 사용자당 한 행이다');
   perform public._assert_raises($s$insert into public.purchase_order (po_no, po_date) values ('EX4500010050', '2026-13-01')$s$,
