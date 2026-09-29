@@ -196,3 +196,9 @@ code { font-family: ui-monospace, Menlo, Consolas, monospace; background: #eef1f
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
 .chip { border: 1px solid var(--primary); color: var(--primary); background: #fff; border-radius: 999px; padding: 4px 12px; font-size: .9rem; cursor: pointer; min-height: 36px; }
 .chip[aria-pressed="true"] { background: var(--primary); color: var(--on-primary); }
+
+/* 도착 통지(A/N) — 끌어 놓기 칸, 메일 원문 */
+.drop-zone { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; min-height: 110px; padding: 16px;
+  border: 2px dashed var(--line); border-radius: var(--radius); background: #f7f9fb; text-align: center; cursor: pointer; }
+.drop-zone:hover, .drop-zone:focus-visible, .drop-zone.over { border-color: var(--primary); background: #eaf1fa; outline: none; }
+.an-raw { white-space: pre-wrap; word-break: break-all; max-height: 40vh; overflow: auto; font-size: .85rem; background: #f7f9fb; border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; }

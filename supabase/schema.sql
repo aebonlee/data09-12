@@ -15,9 +15,12 @@
 --    mail_template    상황별 영문 메일 문안 5종 (제목·본문)
 --    supplier         업체 마스터 (Contact List)
 --    purchase_order   PO 관리 대장 (송부 · OC · EXW · ETD · A/N · 선적서류)
+--    arrival_notice   포워더 도착 통지(A/N) 메일에서 읽은 값 (2026-09-29 저녁 추가)
+--    voyage_registration  항차등록 완료 표시 — PO × B/L 한 줄
+--    voyage_history   항차등록 완료 · 취소 · 조정 ETA 반영 이력 (기록성 — 읽기·쓰기만, 고치기·지우기 없음)
 --
 --  권한 원칙 : 모든 행은 만든 사람(owner_id = auth.uid())만 보고 고칩니다.
---              이 도구에는 기록성(이력·로그) 데이터가 없습니다.
+--              기록성 데이터는 voyage_history 하나이며 UPDATE·DELETE 정책·권한을 두지 않는다.
 --              (받은 메일·Weekly Order Status·Packing List 는 그때그때 파일로
 --               읽어 비교만 하고 저장하지 않는다)
 --  이 스키마는 수강생 본인 프로젝트 전제라 테이블 이름에 접두사를 붙이지 않았습니다.
@@ -123,6 +126,73 @@ alter table public.purchase_order add column if not exists lines         jsonb n
 alter table public.purchase_order add column if not exists voyage        jsonb not null default '{}'::jsonb   -- 항차 체크리스트 {단계: 완료일}
   check (jsonb_typeof(voyage) = 'object');
 
+-- 2026-09-29 저녁 — 도착 통지(A/N) 탭
+alter table public.purchase_order add column if not exists bl_no text not null default '';   -- B/L 번호(A/N 을 PO 에 붙이는 두 번째 열쇠)
+alter table public.purchase_order add column if not exists eta   date;                       -- 가장 최근 A/N 의 ETA
+create index if not exists purchase_order_bl_idx on public.purchase_order (owner_id, bl_no);
+
+-- A/N 메일 한 통 = 한 줄. 도구는 메일 원본(첨부)을 저장하지 않고 읽은 값과 본문 앞부분만 둔다.
+create table if not exists public.arrival_notice (
+  id           bigint generated always as identity primary key,
+  owner_id     uuid not null default auth.uid(),
+  mail_key     text not null check (length(trim(mail_key)) > 0),   -- 도구의 id(보낸 사람·제목·시각·본문 해시) — 같은 메일 두 번 방지
+  file_name    text not null default '',
+  received_on  date,
+  received_at  timestamptz,
+  sender       text not null default '',
+  subject      text not null default '',
+  forwarder    text not null default '',
+  bl_no        text not null default '',
+  mbl_no       text not null default '',
+  vessel       text not null default '',
+  voyage       text not null default '',
+  etd          date,
+  eta          date,
+  pol          text not null default '',
+  pod          text not null default '',
+  containers   text not null default '',          -- 'EXMU1234565(40HC), …'
+  po_nos       text not null default '',          -- 글에서 찾은 PO 번호, 쉼표로
+  packages     text not null default '',          -- '6 PLTS'
+  weight       text not null default '',          -- '2,480.50 KGS' (원문 단위 그대로)
+  parsed       jsonb not null default '{}'::jsonb check (jsonb_typeof(parsed) = 'object'),   -- 처음 읽은 값(고친 칸 표시용)
+  src          jsonb not null default '{}'::jsonb check (jsonb_typeof(src) = 'object'),      -- 칸별 근거 원문 줄
+  body         text not null default '',
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now(),
+  -- upsert onConflict = 'owner_id,mail_key'
+  constraint arrival_notice_uniq unique (owner_id, mail_key)
+);
+create index if not exists arrival_notice_bl_idx on public.arrival_notice (owner_id, bl_no);
+
+-- 항차등록 완료 — PO 번호 × B/L(분할 선적이면 B/L 마다). bl_key = 영문·숫자만 대문자로(도구의 anKey)
+create table if not exists public.voyage_registration (
+  id                   bigint generated always as identity primary key,
+  owner_id             uuid not null default auth.uid(),
+  po_no                text not null check (length(trim(po_no)) > 0),
+  bl_key               text not null check (bl_key ~ '^[A-Z0-9]+$'),
+  bl_no                text not null default '',
+  registered_on        date not null,                -- 사람이 고른 항차등록일
+  eta_at_registration  date,                         -- 등록 때 ETA — 뒤에 A/N ETA 가 바뀌면 「등록 후 ETA 변경」
+  created_at           timestamptz not null default now(),
+  updated_at           timestamptz not null default now(),
+  -- upsert onConflict = 'owner_id,po_no,bl_key'
+  constraint voyage_registration_uniq unique (owner_id, po_no, bl_key)
+);
+
+-- 이력 — 기록성. 한 번 쓰면 고치거나 지우지 않는다(정책·권한 모두 select·insert 만)
+create table if not exists public.voyage_history (
+  id             bigint generated always as identity primary key,
+  owner_id       uuid not null default auth.uid(),
+  at             timestamptz not null default now(),
+  action         text not null check (action in ('register', 'unregister', 'eta_confirm')),
+  po_no          text not null check (length(trim(po_no)) > 0),
+  bl_no          text not null default '',
+  registered_on  date,
+  eta_from       date,
+  eta            date
+);
+create index if not exists voyage_history_po_idx on public.voyage_history (owner_id, po_no, at);
+
 -- ----------------------------------------------------------------------------
 -- 2. 함수 · 트리거
 --
@@ -141,7 +211,7 @@ $fn$;
 do $trg$
 declare t text;
 begin
-  foreach t in array array['workspace', 'mail_template', 'supplier', 'purchase_order']
+  foreach t in array array['workspace', 'mail_template', 'supplier', 'purchase_order', 'arrival_notice', 'voyage_registration']
   loop
     execute format('drop trigger if exists %I on public.%I', t || '_updated_at', t);
     execute format('create trigger %I before update on public.%I for each row execute function public.set_updated_at()',
@@ -158,11 +228,14 @@ alter table public.workspace      enable row level security;
 alter table public.mail_template  enable row level security;
 alter table public.supplier       enable row level security;
 alter table public.purchase_order enable row level security;
+alter table public.arrival_notice      enable row level security;
+alter table public.voyage_registration enable row level security;
+alter table public.voyage_history      enable row level security;
 
 do $rls$
 declare t text;
 begin
-  foreach t in array array['workspace', 'mail_template', 'supplier', 'purchase_order']
+  foreach t in array array['workspace', 'mail_template', 'supplier', 'purchase_order', 'arrival_notice', 'voyage_registration']
   loop
     execute format('drop policy if exists %I on public.%I', t || '_select', t);
     execute format('drop policy if exists %I on public.%I', t || '_insert', t);
@@ -180,16 +253,27 @@ begin
 end;
 $rls$;
 
+-- 이력은 읽기·쓰기 정책만. UPDATE·DELETE 정책이 없으므로 본인도 고치거나 지울 수 없다.
+drop policy if exists voyage_history_select on public.voyage_history;
+drop policy if exists voyage_history_insert on public.voyage_history;
+create policy voyage_history_select on public.voyage_history for select to authenticated using (owner_id = auth.uid());
+create policy voyage_history_insert on public.voyage_history for insert to authenticated with check (owner_id = auth.uid());
+
 -- ----------------------------------------------------------------------------
 -- 4. 표 권한 — Supabase 는 새 표마다 anon 에도 전 권한을 자동으로 붙인다.
 --    정책이 anon 을 막지만, 권한 자체도 끊어 두 겹으로 막는다.
 -- ----------------------------------------------------------------------------
 
-revoke all on public.workspace, public.mail_template, public.supplier, public.purchase_order
+revoke all on public.workspace, public.mail_template, public.supplier, public.purchase_order,
+  public.arrival_notice, public.voyage_registration, public.voyage_history
   from anon;
 grant select, insert, update, delete
-  on public.workspace, public.mail_template, public.supplier, public.purchase_order
+  on public.workspace, public.mail_template, public.supplier, public.purchase_order,
+     public.arrival_notice, public.voyage_registration
   to authenticated;
+-- 이력: 두 겹(정책 + 권한)으로 읽기·쓰기만
+revoke update, delete, truncate on public.voyage_history from authenticated;
+grant select, insert on public.voyage_history to authenticated;
 
 -- ----------------------------------------------------------------------------
 -- 5. 함수 실행 권한

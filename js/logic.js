@@ -63,8 +63,11 @@
     };
   }
 
+  // 도착 통지(A/N): 읽은 메일, 항차등록 완료 표시(PO|B/L 별), 등록 이력
+  function emptyAn() { return { mails: [], regs: {}, history: [] }; }
+
   function emptyDb() {
-    return { suppliers: [], pos: [], settings: defaultSettings(), templates: defaultTemplates() };
+    return { suppliers: [], pos: [], settings: defaultSettings(), templates: defaultTemplates(), an: emptyAn() };
   }
 
   /* ── 문자열·날짜 ─────────────────────────────── */
@@ -165,7 +168,9 @@
       { key: 'docs_received', label: '선적서류 수신', aliases: ['선적서류', '선적서류 수신', 'shipping documents', 'docs'] },
       { key: 'note', label: '메모', aliases: ['메모', 'note', 'remark', '비고'] },
       { key: 'delivery_date', label: 'PO 납기', aliases: ['po 납기', 'contract delivery date', 'delivery date', '납기일', '납기'] },
-      { key: 'oc_no', label: 'OC 번호', aliases: ['oc 번호', 'oc no', 'oc#', 'oc number', 'confirmation no'] }
+      { key: 'oc_no', label: 'OC 번호', aliases: ['oc 번호', 'oc no', 'oc#', 'oc number', 'confirmation no'] },
+      { key: 'bl_no', label: 'B/L 번호', aliases: ['b/l 번호', 'b/l no', 'bl no', 'b/l', 'hbl', 'house b/l'] },
+      { key: 'eta', label: 'ETA', aliases: ['eta', '도착 예정일', '입항 예정일', '입항일'] }
     ],
     weekly: [
       { key: 'po', label: 'PO 번호', required: true, aliases: ['po', 'po no', 'po number', 'po#', 'customer po', 'purchase order', 'order no', 'order number'] },
@@ -682,7 +687,9 @@
       lines: Array.isArray(r.lines) ? r.lines : [],               // PO 품목 줄(PO 본문 읽기 결과)
       voyage: r.voyage && typeof r.voyage === 'object' ? r.voyage : {},  // 항차 체크리스트 {단계: 완료일}
       oc_lines: Array.isArray(r.oc_lines) ? r.oc_lines : [],       // OC 품목(품번·수량) — 수량 대조용
-      exw_plan: r.exw_plan && typeof r.exw_plan === 'object' ? r.exw_plan : {}  // Part No. 별 출하 일정 [{date, qty}] (Cummins 오더 현황)
+      exw_plan: r.exw_plan && typeof r.exw_plan === 'object' ? r.exw_plan : {},  // Part No. 별 출하 일정 [{date, qty}] (Cummins 오더 현황)
+      bl_no: str(r.bl_no),                      // B/L 번호(선적서류·A/N) — A/N 을 PO 에 붙이는 두 번째 열쇠
+      eta: toDate(r.eta)                        // 도착 예정일(A/N 의 가장 최근 ETA)
     };
   }
 
@@ -1221,7 +1228,7 @@
     return out.join('');
   }
   function htmlToText(t) {
-    return t.replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|tr)>/gi, '\n').replace(/<[^>]+>/g, '')
+    return t.replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<\/t[dh]>/gi, '\t').replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|tr)>/gi, '\n').replace(/<[^>]+>/g, '')
       .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
   }
   // 부분 하나를 재귀로 훑어 본문(plain/html)과 첨부를 모읍니다.
@@ -1551,6 +1558,445 @@
     return utf8(out);
   }
 
+  /* ── 도착 통지(A/N) — 2026-09-29 저녁 요청 「도착일정통지 메일 관리」 ─────────────────────────────── */
+  // 포워더마다 A/N 양식이 달라 한 가지 틀로 읽을 수 없습니다. 흔한 영문·국문 라벨을 넓게 잡고
+  // 「라벨 : 값」 줄, 한 줄에 여러 칸(탭·3칸 이상 띄움), 라벨 다음 줄의 값, HTML 표를 모두 읽습니다.
+  // 읽은 값마다 근거가 된 원문 줄을 남겨 사람이 확인하고 고칩니다(실물 A/N 을 받기 전이라 규칙은 가정).
+  var AN_FIELDS = [
+    { key: 'bl', label: 'B/L 번호' },
+    { key: 'mbl', label: 'Master B/L' },
+    { key: 'vessel', label: '선명(Vessel)' },
+    { key: 'voyage', label: '항차(Voyage)' },
+    { key: 'etd', label: 'ETD(출항)', date: true },
+    { key: 'eta', label: 'ETA(도착)', date: true },
+    { key: 'pol', label: '선적항(POL)' },
+    { key: 'pod', label: '도착항(POD)' },
+    { key: 'containers', label: '컨테이너' },
+    { key: 'forwarder', label: '포워더' },
+    { key: 'pos', label: 'PO 번호' },
+    { key: 'packages', label: '포장 수량' },
+    { key: 'weight', label: '중량' }
+  ];
+  // part: 「A / B」 로 묶인 두 칸 라벨에서 몇 번째 값인지. pick: 날짜가 여럿이면 first|last
+  var AN_RULES = {
+    bl: [{ re: 'H\\.?\\s?B\\/?L(?:\\s*(?:No|Number|#|번호)\\.?)?' }, { re: 'House\\s*B\\/?L(?:\\s*(?:No|Number)\\.?)?' },
+      { re: '(?:B\\/L|BL|Bill\\s+of\\s+Lading)\\s*(?:No|Number|#|번호)\\.?' }, { re: 'B\\/L' }, { re: '선하증권\\s*번호|비엘\\s*번호' }],
+    mbl: [{ re: 'M\\.?\\s?B\\/?L(?:\\s*(?:No|Number|#|번호)\\.?)?' }, { re: 'Master\\s*B\\/?L(?:\\s*(?:No|Number)\\.?)?' }],
+    vesvoy: [{ re: '(?:Vessel|VSL|Ship)(?:\\s*Name)?\\s*\\/\\s*Voy(?:age)?\\.?(?:\\s*No\\.?)?' }, { re: '(?:모선|선명)\\s*\\/\\s*항차' }],
+    vessel: [{ re: 'Vessel(?:\\s*Name)?' }, { re: 'VSL' }, { re: 'Flight(?:\\s*No\\.?)?' }, { re: '모선명|모선|선명' }],
+    voyage: [{ re: 'Voy(?:age)?\\.?(?:\\s*No\\.?)?' }, { re: '항차' }],
+    etd: [{ re: 'ETD(?:\\s*\\/\\s*ETA)?', pick: 'first' }, { re: 'On\\s*Board(?:\\s*Date)?', pick: 'first' }, { re: 'Sailing\\s*Date', pick: 'first' },
+      { re: 'Departure(?:\\s*Date)?', pick: 'first' }, { re: '출항\\s*(?:예정)?\\s*일?|선적일', pick: 'first' }],
+    eta: [{ re: '(?:New|Revised|Updated|Changed|Latest)\\s*ETA' }, { re: '변경\\s*(?:ETA|입항일|도착일)' }, { re: 'ETA' },
+      { re: 'Est(?:imated|\\.)?\\s*(?:Time\\s*of\\s*)?Arrival(?:\\s*Date)?' }, { re: 'Arrival\\s*Date' }, { re: '입항\\s*예정\\s*일?|입항일|도착\\s*예정\\s*일?|도착일' }],
+    pol: [{ re: 'POL\\s*\\/\\s*POD', part: 0 }, { re: 'POL' }, { re: 'Port\\s*of\\s*Loading' }, { re: 'Loading\\s*Port' }, { re: '선적항' }],
+    pod: [{ re: 'POL\\s*\\/\\s*POD', part: 1 }, { re: 'POD' }, { re: 'Port\\s*of\\s*Discharge' }, { re: 'Discharg(?:e|ing)\\s*Port' }, { re: '양하항|도착항|입항지' }],
+    forwarder: [{ re: 'Forwarder|Forwarding\\s*Agent' }, { re: '포워더|운송사' }],
+    packages: [{ re: 'No\\.?\\s*of\\s*(?:Pkgs?|Packages)' }, { re: 'Packages?|PKGS?' }, { re: '포장\\s*수량|포장|수량' }],
+    weight: [{ re: 'Gross\\s*Weight|G\\.?\\s*\\/?\\s*W(?:T)?\\.?' }, { re: 'Weight' }, { re: '총\\s*중량|중량' }],
+    containers: [{ re: 'Container(?:\\s*No\\.?)?|CNTR(?:\\s*No\\.?)?' }, { re: '컨테이너(?:\\s*번호)?' }],
+    pos: [{ re: 'P\\.?\\s?O\\.?\\s*(?:No|Number|#)\\.?' }, { re: 'Order\\s*No\\.?' }, { re: 'Customer\\s*Ref(?:erence)?\\.?|Your\\s*Ref\\.?' }, { re: '발주\\s*번호|오더\\s*번호' }]
+  };
+  var AN_DATE_LABEL = { etd: true, eta: true };
+  var TEXT_FIELD = { vessel: true, vesvoy: true, voyage: true, pol: true, pod: true, forwarder: true, containers: true };
+
+  // 줄 안의 라벨 뒤 값: 앞은 글자가 아닌 곳에서 시작, 뒤는 글자가 붙지 않아야 라벨입니다(POL ≠ POLAND, G/W ≠ GWANGYANG).
+  function labelRegex(src, isDate) {
+    // 날짜 라벨은 「ETA BUSAN :」·「ETA (Busan):」처럼 라벨과 쌍점 사이에 항구 이름이 끼어도 받습니다.
+    var port = isDate ? '(?:\\s*\\([^)]{0,24}\\)|\\s+(?:at\\s+|to\\s+|in\\s+)?[A-Za-z가-힣][A-Za-z가-힣 ,]{1,20}?(?=\\s*[:：]))?' : '';
+    var paren = isDate ? '' : '(?:\\s*\\([^)]{0,24}\\))?';   // 「발주번호(REF)」
+    return new RegExp('(^|[^A-Za-z0-9가-힣])(?:' + src + ')(?![A-Za-z가-힣])' + port + paren + '(\\s*(?:[:：=]|-(?=\\s))?\\s*)(.*)$', 'i');
+  }
+  function cutCell(v) { return str(str(v).split(/\t|\s{3,}|\s\|\s/)[0]).replace(/^[\s:：\-=.]+/, '').trim(); }
+
+  // 글 속 날짜를 모두 찾아 위치 순서로 돌려줍니다. d/m/y 와 m/d/y 가 헷갈리는 모양은 ambiguous 표시.
+  var AN_MON = 'jan|feb|mar|apr|may|jun|jul|aug|sept|sep|oct|nov|dec';
+  function datesIn(s, dayFirst) {
+    s = str(s);
+    var res = [
+      /\d{4}\s*[-.\/년]\s*\d{1,2}\s*[-.\/월]\s*\d{1,2}\s*일?/g,
+      new RegExp('\\d{1,2}(?:st|nd|rd|th)?[\\s\\-.\\/]*(?:' + AN_MON + ')[a-z]*\\.?[\\s\\-.\\/,]*\\d{4}', 'gi'),
+      new RegExp('(?:' + AN_MON + ')[a-z]*\\.?[\\s\\-]*\\d{1,2}(?:st|nd|rd|th)?,?[\\s\\-]*\\d{4}', 'gi'),
+      /\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{4}/g
+    ];
+    var hits = [];
+    res.forEach(function (re, k) {
+      var m;
+      while ((m = re.exec(s))) {
+        var raw = m[0], iso = '', amb = false;
+        if (k === 1) { var q = new RegExp('(\\d{1,2})(?:st|nd|rd|th)?[\\s\\-.\\/]*(' + AN_MON + ')[a-z]*\\.?[\\s\\-.\\/,]*(\\d{4})', 'i').exec(raw); iso = q ? ymd(q[3], MONTHS[q[2].toLowerCase()], q[1]) : ''; }
+        else if (k === 2) { var q2 = new RegExp('(' + AN_MON + ')[a-z]*\\.?[\\s\\-]*(\\d{1,2})(?:st|nd|rd|th)?,?[\\s\\-]*(\\d{4})', 'i').exec(raw); iso = q2 ? ymd(q2[3], MONTHS[q2[1].toLowerCase()], q2[2]) : ''; }
+        else if (k === 3) { var p = raw.split(/[\/.\-]/); amb = +p[0] <= 12 && +p[1] <= 12 && p[0] !== p[1]; iso = toDate(raw, dayFirst); }
+        else iso = toDate(raw);
+        if (iso) hits.push({ i: m.index, end: m.index + raw.length, iso: iso, raw: raw, ambiguous: amb });
+      }
+    });
+    hits.sort(function (a, b) { return a.i - b.i || (b.end - b.i) - (a.end - a.i); });
+    var out = [];
+    hits.forEach(function (h) { if (!out.length || h.i >= out[out.length - 1].end) out.push(h); });
+    return out;
+  }
+
+  var CNTR_RE = /(^|[^A-Z0-9])([A-Z]{3}[UJZ])\s?(\d{6})\s?(\d)(?![0-9])(?:\s*[\/(,]?\s*((?:20|40|45)\s?(?:GP|DC|DV|HC|HQ|RF|RH|OT|FR|TK|FT|')))?/g;
+  function weightKg(s) {
+    var m = /(\d[\d,]*(?:\.\d+)?)\s*(KGS?|KILOS?|LBS?|POUNDS?|MT|TONS?|톤|킬로그램|kg)?/i.exec(str(s));
+    if (!m) return null;
+    var n = Number(m[1].replace(/,/g, '')); if (isNaN(n)) return null;
+    var u = (m[2] || 'kg').toLowerCase();
+    if (/^(lb|lbs|pound|pounds)$/.test(u)) n = n * LB_TO_KG;
+    else if (/^(mt|ton|tons|톤)$/.test(u)) n = n * 1000;
+    return Math.round(n * 100) / 100;
+  }
+  function anKey(v) { return str(v).toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+  function anPoList(v) { return str(v).split(/[\s,;\/]+/).map(function (x) { return x.trim().toUpperCase(); }).filter(Boolean); }
+
+  // 값 검사: 라벨이 본문 문장 속에 우연히 나와도(「packages will arrive」) 값 모양이 아니면 다음 후보로 넘어갑니다.
+  function anValue(key, v, dayFirst) {
+    v = str(v);
+    if (!v) return null;
+    var m;
+    switch (key) {
+      case 'bl': case 'mbl':
+        m = /[A-Z0-9][A-Z0-9\-]{5,24}/g; var t;
+        while ((t = m.exec(v.toUpperCase()))) if (/\d/.test(t[0]) && /[A-Z]/.test(t[0].replace(/^NO/, '')) || /^\d{8,}$/.test(t[0])) return t[0];
+        return null;
+      case 'etd': case 'eta': {
+        var ds = datesIn(v, dayFirst);
+        return ds.length ? ds : null;
+      }
+      case 'voyage':
+        m = /(?:^|\s)(V\.?\s?)?([0-9A-Z][0-9A-Z.\-]{1,11})(?=\s|$)/i.exec(v);
+        return m && /\d/.test(m[2]) ? (m[1] ? 'V.' : '') + m[2].toUpperCase() : null;
+      case 'vessel': case 'vesvoy': case 'pol': case 'pod': case 'forwarder':
+        v = v.replace(/\s+/g, ' ').replace(/[,;.\s]+$/, '');
+        return /[A-Za-z가-힣]{2}/.test(v) && v.length <= 60 && !/^(no|n\/a|tba|tbc)$/i.test(v) ? v : null;
+      case 'packages':
+        m = /(\d[\d,]*)\s*([A-Za-z\/'가-힣]+)?/.exec(v);
+        return m ? (m[1] + (m[2] ? ' ' + m[2].toUpperCase() : '')).trim() : null;
+      case 'weight':
+        m = /(\d[\d,]*(?:\.\d+)?)\s*(KGS?|KILOS?|LBS?|MT|TONS?|톤|kg)?/i.exec(v);
+        return m ? (m[1] + (m[2] ? ' ' + m[2].toUpperCase() : '')).trim() : null;
+      case 'containers':
+        return /[A-Za-z0-9]{3}/.test(v) && v.length <= 80 ? v : null;
+      case 'pos':
+        return /\d/.test(v) ? v : null;
+    }
+    return null;
+  }
+
+  // 한 가지 칸을 라벨 규칙 순서대로 찾습니다. 같은 규칙은 글 위(제목 → 본문)부터.
+  function anFind(key, lines, dayFirst) {
+    var rules = AN_RULES[key];
+    for (var r = 0; r < rules.length; r++) {
+      var re = labelRegex(rules[r].re, !!AN_DATE_LABEL[key]);
+      for (var i = 0; i < lines.length; i++) {
+        var m = re.exec(lines[i]);
+        if (!m) continue;
+        var raw = m[3], used = false;
+        // 근거 원문: 한 줄에 칸이 여럿(표)이면 라벨과 그 값 칸만, 아니면 줄 전체. 첫 줄은 메일 제목.
+        var src = /\t/.test(lines[i]) ? (lines[i].slice(m.index + m[1].length, lines[i].length - raw.length).trim() + ' ' + cutCell(raw)).trim() : lines[i].trim();
+        if (i === 0) src = '제목: ' + src;
+        // 글자 칸(선명·항구·포워더)은 문장 속 낱말(「the following vessel arrives」)을 값으로 오인하기 쉬워,
+        // 줄 맨 앞 라벨이거나 쌍점·탭·여러 칸 띄움으로 값과 나뉜 경우만 받습니다.
+        var atStart = !lines[i].slice(0, m.index + m[1].length).trim();
+        var strict = atStart || /[:：=\t]|\s{2,}/.test(m[2]) || !raw.trim();
+        if (!strict && TEXT_FIELD[key]) continue;
+        if (!cutCell(raw) || /^[:：]?\s*$/.test(raw)) {
+          // 라벨만 있는 줄 → 다음 비지 않은 줄이 값(표를 줄 단위로 복사한 모양)
+          for (var j = i + 1; j < Math.min(lines.length, i + 3); j++) if (lines[j].trim()) { raw = lines[j]; src += ' ⏎ ' + lines[j].trim(); used = true; break; }
+          if (!used) continue;
+        }
+        var cell = cutCell(raw);
+        if (AN_DATE_LABEL[key] && !datesIn(cell, dayFirst).length) cell = raw;   // 칸 나눔에 날짜가 잘렸으면 줄 나머지
+        if (rules[r].part != null) cell = str(cell.split(/\s*(?:\/|→|->)\s*/)[rules[r].part]);
+        var val = anValue(key, cell, dayFirst);
+        if (val == null) continue;
+        return { value: val, src: src.slice(0, 200), pick: rules[r].pick || 'last' };
+      }
+    }
+    return null;
+  }
+
+  // mail: { subject, body, from, fromAddr, date, dateTime } (parseEml 결과) · db: 대장(PO 번호 찾기) · opts: { file, dayFirst, today, now }
+  function parseArrivalNotice(mail, db, opts) {
+    opts = opts || {};
+    var dayFirst = !!opts.dayFirst;
+    var text = str(mail.subject) + '\n' + str(mail.body).replace(/ /g, ' ');
+    var lines = text.split(/\r?\n/).map(function (l) { return l.replace(/\s+$/, ''); });
+    var f = {}, src = {}, notes = [];
+    ['bl', 'mbl', 'etd', 'eta', 'pol', 'pod', 'forwarder', 'packages', 'weight'].forEach(function (k) {
+      var r = anFind(k, lines, dayFirst);
+      if (!r) return;
+      if (AN_DATE_LABEL[k]) {
+        var d = r.pick === 'first' ? r.value[0] : r.value[r.value.length - 1];
+        f[k] = d.iso;
+        if (d.ambiguous) notes.push(AN_FIELDS.filter(function (x) { return x.key === k; })[0].label + ' 「' + d.raw + '」 — 일/월 순서 확인');
+      } else f[k] = r.value;
+      src[k] = r.src;
+    });
+    if (f.bl && f.mbl && f.bl === f.mbl) delete f.mbl;
+    if (!f.bl && f.mbl) { f.bl = f.mbl; src.bl = src.mbl; delete f.mbl; delete src.mbl; }   // B/L 이 하나뿐이면 그 번호를 씀
+    // 선명·항차: 「선명 / 항차」 한 칸 → 따로 적힌 칸 순서
+    var vv = anFind('vesvoy', lines, dayFirst);
+    if (vv) {
+      var cell = cutCell(vv.value), parts = cell.split(/\s*\/\s*/), ves = parts[0], voy = parts[1] || '';
+      if (!voy) { var mv = /^(.*?)\s+((?:V\.?\s?)?[0-9][0-9A-Z]{1,6})$/i.exec(ves); if (mv) { ves = mv[1]; voy = mv[2]; } }
+      if (anValue('vessel', ves)) { f.vessel = anValue('vessel', ves); src.vessel = vv.src; }
+      if (voy && anValue('voyage', voy)) { f.voyage = anValue('voyage', voy); src.voyage = vv.src; }
+    }
+    ['vessel', 'voyage'].forEach(function (k) {
+      if (f[k]) return;
+      var r = anFind(k, lines, dayFirst);
+      if (r) { f[k] = r.value; src[k] = r.src; }
+    });
+    // 컨테이너: ISO 6346 모양(영문 4자 + 숫자 7자리)을 글 전체에서. 없으면 라벨 값(LCL 등)
+    var cn = [], cnSrc = [];
+    lines.forEach(function (l) {
+      var m, re = new RegExp(CNTR_RE.source, 'g'), hit = false;
+      while ((m = re.exec(l))) {
+        var v = m[2] + m[3] + m[4] + (m[5] ? '(' + m[5].replace(/\s/g, '').toUpperCase() + ')' : '');
+        if (!cn.some(function (x) { return x.slice(0, 11) === v.slice(0, 11); })) cn.push(v);
+        hit = true;
+      }
+      if (hit && cnSrc.length < 3) cnSrc.push(l.trim().slice(0, 120));
+    });
+    if (cn.length) { f.containers = cn.join(', '); src.containers = cnSrc.join(' ⏎ '); }
+    else { var rc = anFind('containers', lines, dayFirst); if (rc) { f.containers = rc.value; src.containers = rc.src; } }
+    // PO 번호: 대장 PO 번호가 글에 있으면 먼저, 다음은 PO 번호 규칙(설정) · PO 라벨 값. B/L·컨테이너 번호와 같은 것은 뺌
+    var found = [], poSrc = [], up = text.toUpperCase();
+    var skip = [anKey(f.bl), anKey(f.mbl)].concat(cn.map(function (c) { return c.slice(0, 11); }));
+    function addPo(no) { no = str(no).toUpperCase(); if (no && found.indexOf(no) < 0 && skip.indexOf(anKey(no)) < 0) found.push(no); }
+    ((db && db.pos) || []).forEach(function (p) {
+      if (p.po_no && new RegExp('(^|[^A-Z0-9])' + escRe(p.po_no.toUpperCase()) + '($|[^A-Z0-9])').test(up)) addPo(p.po_no);
+    });
+    poNumbersIn(text, db && db.settings ? db.settings.po_regex : '').list.forEach(addPo);
+    var rp = anFind('pos', lines, dayFirst);
+    if (rp) anPoList(cutCell(rp.value)).filter(function (x) { return /\d/.test(x) && x.length >= 5; }).forEach(addPo);
+    if (found.length) {
+      f.pos = found.join(', ');
+      lines.forEach(function (l) { if (poSrc.length < 3 && found.some(function (no) { return l.toUpperCase().indexOf(no) >= 0; })) poSrc.push(l.trim().slice(0, 120)); });
+      src.pos = poSrc.join(' ⏎ ');
+    }
+    // 포워더: 라벨 → 보낸 사람 이름 → 도메인
+    if (!f.forwarder && mail.from) {
+      var name = str(mail.from).replace(/<[^>]*>/, '').replace(/^["'\s]+|["'\s]+$/g, '');
+      var dom = mail.fromAddr ? domainOf(mail.fromAddr) : '';
+      f.forwarder = name && !/@/.test(name) ? name : dom;
+      if (f.forwarder) src.forwarder = 'From: ' + str(mail.from);
+    }
+    var fields = {};
+    AN_FIELDS.forEach(function (x) { fields[x.key] = f[x.key] || ''; });
+    var now = opts.now || new Date().toISOString();
+    return {
+      id: 'an' + (hashCode(str(mail.from) + '|' + str(mail.subject) + '|' + str(mail.dateTime) + '|' + str(mail.body).slice(0, 4000)) >>> 0).toString(36),
+      file: str(opts.file), received: mail.date || opts.today || '', receivedAt: mail.dateTime || now,
+      from: str(mail.from), subject: str(mail.subject), fields: fields, parsed: Object.assign({}, fields), src: src, notes: notes,
+      text: str(mail.body).slice(0, 8000)
+    };
+  }
+
+  // 붙여넣은 글: 메일 원문(머리글 포함)이면 .eml 처럼, 아니면 본문으로 읽습니다.
+  function anMailFromText(text) {
+    text = str(text);
+    if (/^(?:[\w\-]+:.*\r?\n)*(?:From|Subject):/i.test(text) && /\r?\n\r?\n/.test(text) && /^(?:[\w\-]+:[^\n]*\r?\n)+/.test(text)) return parseEml(text);
+    return { from: '', fromAddr: '', subject: '', date: '', dateTime: '', body: text, attachments: [] };
+  }
+
+  // 같은 B/L(House 또는 Master 번호가 겹치면 같은 건)의 A/N 을 묶어, 받은 순서대로 ETA 변경을 찾습니다.
+  function anGroups(recs) {
+    var groups = [];
+    (recs || []).forEach(function (r) {
+      var keys = [anKey(r.fields.bl), anKey(r.fields.mbl)].filter(Boolean);
+      var g = keys.length ? groups.filter(function (x) { return keys.some(function (k) { return x.keys.indexOf(k) >= 0; }); })[0] : null;
+      if (!g) { g = { keys: [], recs: [] }; groups.push(g); }
+      keys.forEach(function (k) { if (g.keys.indexOf(k) < 0) g.keys.push(k); });
+      g.recs.push(r);
+    });
+    groups.forEach(function (g) {
+      g.recs = g.recs.map(function (r, i) { return { r: r, i: i }; }).sort(function (a, b) {
+        return str(a.r.receivedAt || a.r.received).localeCompare(str(b.r.receivedAt || b.r.received)) || a.i - b.i;
+      }).map(function (x) { return x.r; });
+      var merged = {}, changes = [], last = '', pos = [];
+      g.recs.forEach(function (r) {
+        AN_FIELDS.forEach(function (x) { if (r.fields[x.key]) merged[x.key] = r.fields[x.key]; });
+        anPoList(r.fields.pos).forEach(function (no) { if (pos.indexOf(no) < 0) pos.push(no); });
+        var e = r.fields.eta;
+        if (e) { if (last && e !== last) changes.push({ from: last, to: e, at: r.received, file: r.file, id: r.id, days: daysBetween(last, e) }); last = e; }
+      });
+      merged.pos = pos.join(', ');
+      g.merged = merged; g.poList = pos; g.etaChanges = changes;
+      g.bl = merged.bl || merged.mbl || '';
+      g.first = g.recs[0]; g.latest = g.recs[g.recs.length - 1];
+    });
+    return groups;
+  }
+
+  // A/N 묶음 → 대장 PO: 글에 적힌 PO 번호, 또는 대장에 적힌 B/L 번호가 같은 PO
+  function anMatch(g, db) {
+    var list = [], seen = {}, unknown = [];
+    g.poList.forEach(function (no) {
+      var p = db.pos.filter(function (x) { return x.po_no && x.po_no.toUpperCase() === no; })[0];
+      if (p) { if (!seen[p.po_no]) { seen[p.po_no] = 1; list.push({ po: p, via: 'PO 번호' }); } }
+      else unknown.push(no);
+    });
+    db.pos.forEach(function (p) {
+      if (p.bl_no && !seen[p.po_no] && g.keys.indexOf(anKey(p.bl_no)) >= 0) { seen[p.po_no] = 1; list.push({ po: p, via: 'B/L' }); }
+    });
+    return { list: list, unknown: unknown };
+  }
+
+  // 항차등록 대기: B/L 이 있고 A/N 을 받았는데 아직 「등록 완료」가 아닌 PO. 열쇠 = PO 번호 | B/L(분할 선적이면 B/L 마다 한 줄)
+  function anQueue(db) {
+    var an = db.an || emptyAn(), regs = an.regs || {};
+    var groups = anGroups(an.mails), rows = [], unmatched = [], covered = {};
+    groups.forEach(function (g) {
+      var m = anMatch(g, db);
+      if (!m.list.length) { unmatched.push({ group: g, unknown: m.unknown }); return; }
+      if (!g.bl) return;   // B/L 을 못 읽은 A/N 은 대기 목록에 올리지 않고 메일 목록에서 고치게 함
+      m.list.forEach(function (x) {
+        var key = x.po.po_no + '|' + anKey(g.bl);
+        if (covered[key]) return;
+        covered[key] = true;
+        var reg = regs[key] || null, eta = g.merged.eta || '';
+        rows.push({
+          key: key, po_no: x.po.po_no, supplier_code: x.po.supplier_code, bl: g.bl, mbl: g.merged.mbl || '', via: x.via, source: 'mail',
+          vessel: g.merged.vessel || '', voyage: g.merged.voyage || '', etd: g.merged.etd || '', eta: eta, pod: g.merged.pod || '',
+          etaChanges: g.etaChanges, anCount: g.recs.length, firstAn: g.first.received, lastAn: g.latest.received, unknownPos: m.unknown,
+          reg: reg, etaAfterReg: reg && reg.eta && eta && reg.eta !== eta ? { from: reg.eta, to: eta } : null
+        });
+      });
+    });
+    // 메일 없이 대장에 「A/N 수신」과 B/L 을 손으로 적은 PO 도 대기 대상
+    db.pos.forEach(function (p) {
+      if (!p.an_received || !p.bl_no) return;
+      var key = p.po_no + '|' + anKey(p.bl_no);
+      if (covered[key]) return;
+      covered[key] = true;
+      var reg = regs[key] || null;
+      rows.push({ key: key, po_no: p.po_no, supplier_code: p.supplier_code, bl: p.bl_no, mbl: '', via: '대장', source: 'ledger',
+        vessel: '', voyage: '', etd: p.etd || '', eta: p.eta || '', pod: '', etaChanges: [], anCount: 0, firstAn: '', lastAn: '', unknownPos: [],
+        reg: reg, etaAfterReg: reg && reg.eta && p.eta && reg.eta !== p.eta ? { from: reg.eta, to: p.eta } : null });
+    });
+    rows.sort(function (a, b) { return str(a.eta || '9999').localeCompare(str(b.eta || '9999')) || a.po_no.localeCompare(b.po_no); });
+    return {
+      groups: groups, rows: rows, unmatched: unmatched,
+      pending: rows.filter(function (r) { return !r.reg; }),
+      done: rows.filter(function (r) { return r.reg; }),
+      etaChanged: groups.filter(function (g) { return g.etaChanges.length; })
+    };
+  }
+
+  // 같은 메일(보낸 사람·제목·보낸 시각·본문이 같음)은 한 번만 넣습니다.
+  function anAddMails(db, recs) {
+    db.an = db.an || emptyAn();
+    var ids = db.an.mails.map(function (r) { return r.id; }), added = 0, skipped = 0;
+    recs.forEach(function (r) { if (ids.indexOf(r.id) >= 0) { skipped++; return; } ids.push(r.id); db.an.mails.push(r); added++; });
+    return { added: added, skipped: skipped };
+  }
+
+  // 대장에 반영: A/N 수신 표시, B/L 번호(비어 있을 때만), ETA(가장 최근 A/N 값), ETD(비어 있을 때만)
+  function anSyncToPos(db) {
+    var q = anQueue(db), n = 0;
+    q.rows.forEach(function (r) {
+      if (r.source !== 'mail') return;
+      var p = db.pos.filter(function (x) { return x.po_no === r.po_no; })[0];
+      if (!p) return;
+      var before = JSON.stringify([p.an_received, p.bl_no, p.eta, p.etd]);
+      p.an_received = true;
+      if (!p.bl_no) p.bl_no = r.bl;
+      if (r.eta) p.eta = r.eta;
+      if (!p.etd && r.etd) p.etd = r.etd;
+      if (JSON.stringify([p.an_received, p.bl_no, p.eta, p.etd]) !== before) n++;
+    });
+    return n;
+  }
+
+  function anHistPush(db, e) { db.an.history.push(e); }
+  // 항차등록 완료 표시. date = 등록일(사람이 고름), now = 누른 시각(이력)
+  function anRegister(db, rows, date, now) {
+    db.an = db.an || emptyAn();
+    now = now || new Date().toISOString();
+    rows.forEach(function (r) {
+      db.an.regs[r.key] = { date: date, eta: r.eta || '', at: now };
+      anHistPush(db, { at: now, action: 'register', po_no: r.po_no, bl: r.bl, date: date, eta: r.eta || '' });
+    });
+    return rows.length;
+  }
+  function anUnregister(db, row, now) {
+    now = now || new Date().toISOString();
+    var reg = db.an.regs[row.key];
+    if (!reg) return false;
+    delete db.an.regs[row.key];
+    anHistPush(db, { at: now, action: 'unregister', po_no: row.po_no, bl: row.bl, date: reg.date, eta: reg.eta });
+    return true;
+  }
+  // 등록 뒤 ETA 가 바뀐 건: SRM 조정 ETA 를 고쳐 넣었다고 표시(등록 때 ETA 를 새 값으로)
+  function anConfirmEta(db, row, now) {
+    now = now || new Date().toISOString();
+    var reg = db.an.regs[row.key];
+    if (!reg || !row.etaAfterReg) return false;
+    anHistPush(db, { at: now, action: 'eta_confirm', po_no: row.po_no, bl: row.bl, date: reg.date, eta_from: reg.eta, eta: row.eta });
+    reg.eta = row.eta;
+    return true;
+  }
+  var AN_ACTION = { register: '항차등록 완료', unregister: '등록 취소', eta_confirm: '등록 후 ETA 변경 반영', eta_change: 'A/N ETA 변경' };
+  // 이력 = 사람이 누른 기록(저장) + A/N 에서 찾은 ETA 변경(계산). 최근 것부터.
+  function anHistory(db) {
+    var an = db.an || emptyAn();
+    var out = an.history.map(function (e) { return Object.assign({ kind: 'user' }, e); });
+    anGroups(an.mails).forEach(function (g) {
+      g.etaChanges.forEach(function (c) { out.push({ kind: 'mail', at: c.at, action: 'eta_change', po_no: g.poList.join(', '), bl: g.bl, eta_from: c.from, eta: c.to, file: c.file }); });
+    });
+    return out.sort(function (a, b) { return str(b.at).localeCompare(str(a.at)); });
+  }
+  function anRegDateOf(db, poNo) {
+    var regs = (db && db.an && db.an.regs) || {}, out = [];
+    Object.keys(regs).forEach(function (k) { if (k.split('|')[0] === poNo) out.push(regs[k].date); });
+    return out.join(', ');
+  }
+
+  /* 내보내기 표 */
+  function anMailRows(db) {
+    var q = anQueue(db);
+    return ((db.an && db.an.mails) || []).map(function (r) {
+      var g = q.groups.filter(function (x) { return x.recs.indexOf(r) >= 0; })[0];
+      var m = g ? anMatch(g, db) : { list: [], unknown: [] };
+      var o = { '받은 날': r.received, '파일': r.file, '보낸 사람': r.from, '제목': r.subject };
+      AN_FIELDS.forEach(function (f) { o[f.label] = r.fields[f.key]; });
+      o['중량(kg 환산)'] = weightKg(r.fields.weight) == null ? '' : weightKg(r.fields.weight);
+      o['대장 PO 연결'] = m.list.map(function (x) { return x.po.po_no + '(' + x.via + ')'; }).join(', ');
+      o['대장에 없는 PO 번호'] = m.unknown.join(', ');
+      o['고친 칸'] = AN_FIELDS.filter(function (f) { return r.parsed && r.fields[f.key] !== r.parsed[f.key]; }).map(function (f) { return f.label; }).join(', ');
+      return o;
+    });
+  }
+  function anQueueRows(rows, db) {
+    return rows.map(function (r) {
+      var s = supplierByCode(db.suppliers, r.supplier_code);
+      return {
+        'PO 번호': r.po_no, '업체': s ? s.name : r.supplier_code, 'B/L 번호': r.bl, 'Master B/L': r.mbl, '연결 근거': r.via,
+        '선명': r.vessel, '항차': r.voyage, 'ETD': r.etd, 'ETA': r.eta, '도착항': r.pod,
+        'ETA 변경': r.etaChanges.map(function (c) { return c.from + ' → ' + c.to; }).join('; '),
+        'A/N 통수': r.anCount, '첫 A/N': r.firstAn, '마지막 A/N': r.lastAn,
+        '항차등록일': r.reg ? r.reg.date : '', '등록 때 ETA': r.reg ? r.reg.eta : '',
+        '상태': !r.reg ? '항차등록 대기' : r.etaAfterReg ? '등록 후 ETA 변경(' + r.etaAfterReg.from + ' → ' + r.etaAfterReg.to + ')' : '등록 완료'
+      };
+    });
+  }
+  function anHistoryRows(db) {
+    return anHistory(db).map(function (e) {
+      return { '시각': e.at, '구분': AN_ACTION[e.action] || e.action, 'PO 번호': e.po_no, 'B/L 번호': e.bl, '등록일': e.date || '', '이전 ETA': e.eta_from || '', 'ETA': e.eta || '', '근거 파일': e.file || '' };
+    });
+  }
+  // CSV — 엑셀에서 한글이 깨지지 않도록 BOM, 칸 안의 쉼표·따옴표·줄바꿈은 따옴표로 감쌈
+  function toCsv(rows) {
+    if (!rows.length) return '﻿';
+    var head = [];
+    rows.forEach(function (r) { Object.keys(r).forEach(function (k) { if (head.indexOf(k) < 0) head.push(k); }); });
+    function q(v) { v = v == null ? '' : String(v); return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
+    return '﻿' + [head.map(q).join(',')].concat(rows.map(function (r) { return head.map(function (k) { return q(r[k]); }).join(','); })).join('\r\n') + '\r\n';
+  }
+
   /* ── 엑셀 내보내기용 표 ─────────────────────────────── */
   function ledgerRows(db, today) {
     return db.pos.map(function (p) {
@@ -1563,7 +2009,8 @@
         '선적 예정일(ETD)': p.etd, 'A/N 수신': p.an_received ? 'Y' : '', '선적서류 수신': p.docs_received ? 'Y' : '',
         '상태': poFlags(p, today, db.settings).map(function (f) { return f.label; }).join(', '), '메모': p.note,
         'PO 납기': p.delivery_date || '', 'OC 번호': p.oc_no || '', 'EXW 일정(품번별)': exwPlanText(p),
-        '항차 진행': (function () { var v = voyageProgress(p); return v.done + '/' + v.total; })()
+        '항차 진행': (function () { var v = voyageProgress(p); return v.done + '/' + v.total; })(),
+        'B/L 번호': p.bl_no || '', 'ETA': p.eta || '', '항차등록일': anRegDateOf(db, p.po_no)
       };
     });
   }
@@ -1592,7 +2039,11 @@
     isOcAttachment: isOcAttachment, parseOcFileName: parseOcFileName, parseOcGrid: parseOcGrid, compareOcToPo: compareOcToPo,
     parseTsv: parseTsv, cumminsRows: cumminsRows, cumminsExwPlan: cumminsExwPlan, applyCumminsExw: applyCumminsExw,
     cumminsStatusAsOf: cumminsStatusAsOf, cumminsWeekDiff: cumminsWeekDiff, weekNoteText: weekNoteText, exwEntries: exwEntries, exwPlanText: exwPlanText, LB_TO_KG: LB_TO_KG, bytesToBinary: bytesToBinary,
-    crc32: crc32, makeZip: makeZip, makeSimplePdf: makeSimplePdf, ledgerRows: ledgerRows, pct: pct, num1: num1
+    crc32: crc32, makeZip: makeZip, makeSimplePdf: makeSimplePdf, ledgerRows: ledgerRows, pct: pct, num1: num1,
+    emptyAn: emptyAn, AN_FIELDS: AN_FIELDS, AN_ACTION: AN_ACTION, datesIn: datesIn, weightKg: weightKg, anKey: anKey, anPoList: anPoList,
+    parseArrivalNotice: parseArrivalNotice, anMailFromText: anMailFromText, anGroups: anGroups, anMatch: anMatch, anQueue: anQueue,
+    anAddMails: anAddMails, anSyncToPos: anSyncToPos, anRegister: anRegister, anUnregister: anUnregister, anConfirmEta: anConfirmEta,
+    anHistory: anHistory, anRegDateOf: anRegDateOf, anMailRows: anMailRows, anQueueRows: anQueueRows, anHistoryRows: anHistoryRows, toCsv: toCsv
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.OMLogic = api;

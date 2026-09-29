@@ -1,0 +1,31 @@
+From: Alpha Logistics Import (sample) <import@alpha-logistics.example.com>
+To: buyer@our-company.example.com
+Subject: ARRIVAL NOTICE / HBL: ALGS2609001 / PO EX4500010002
+Date: Sat, 26 Sep 2026 01:10:00 +0000
+MIME-Version: 1.0
+Content-Type: text/plain; charset="UTF-8"
+
+ARRIVAL NOTICE  (SAMPLE - NOT A REAL SHIPMENT)
+
+Dear Customer,
+Please be advised that the following shipment will arrive as below.
+
+HBL NO.        : ALGS2609001
+MBL NO.        : EXMU000000000001
+VESSEL / VOY   : EXAMPLE STAR / 012E
+POL            : HAMBURG, GERMANY
+POD            : BUSAN, KOREA
+ETD            : 26-SEP-2026
+ETA            : 24-OCT-2026
+CONTAINER      : EXMU1234565 / 40HC
+PACKAGES       : 6 PLTS
+GROSS WEIGHT   : 2,480.50 KGS
+SHIPPER        : ALPHA PRECISION GMBH (SAMPLE)
+CONSIGNEE      : EXAMPLE BUYER CO., LTD. (SAMPLE)
+PO NO.         : EX4500010002
+
+Please arrange customs clearance documents before arrival.
+
+Best regards,
+Import Team
+Alpha Logistics Co., Ltd. (sample)

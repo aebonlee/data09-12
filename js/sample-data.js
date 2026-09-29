@@ -22,7 +22,7 @@
     return [
       { po_no: 'EX4500010001', supplier_code: 'EX-A01', item: 'Bearing housing', po_date: t(-60), sent_date: t(-60), oc_date: t(-57), exw_promised: t(-20), exw_actual: t(-20), etd: t(-15), an_received: true, docs_received: true, note: '' },
       { po_no: 'EX4500010002', supplier_code: 'EX-A01', item: 'Shaft seal kit', po_date: t(-45), sent_date: t(-45), oc_date: t(-44), exw_promised: t(-10), exw_actual: t(-6), etd: t(-2), an_received: false, docs_received: true, note: '' },
-      { po_no: 'EX4500010003', supplier_code: 'EX-B02', item: 'Fuel injector', po_date: t(-50), sent_date: t(-50), oc_date: t(-49), exw_promised: t(-25), exw_actual: t(-30), etd: t(-24), an_received: true, docs_received: true, note: '' },
+      { po_no: 'EX4500010003', supplier_code: 'EX-B02', item: 'Fuel injector', po_date: t(-50), sent_date: t(-50), oc_date: t(-49), exw_promised: t(-25), exw_actual: t(-30), etd: t(-24), an_received: true, docs_received: true, note: '', bl_no: 'GMAO26090077' },
       { po_no: 'EX4500010004', supplier_code: 'EX-B02', item: 'Turbocharger', po_date: t(-30), sent_date: t(-30), oc_date: t(-26), exw_promised: t(-3), exw_actual: '', etd: t(4), an_received: false, docs_received: false, note: '' },
       { po_no: 'EX4500010005', supplier_code: 'EX-C03', item: 'Hydraulic pump', po_date: t(-40), sent_date: t(-40), oc_date: t(-35), exw_promised: t(-12), exw_actual: t(-2), etd: t(3), an_received: false, docs_received: false, note: '' },
       { po_no: 'EX4500010006', supplier_code: 'EX-C03', item: 'Control valve', po_date: t(-9), sent_date: t(-9), oc_date: '', exw_promised: '', exw_actual: '', etd: '', an_received: false, docs_received: false, note: '' },
@@ -287,10 +287,113 @@
     return { grid: grid, yellow: yellow };
   }
 
+
+  /* ── 도착 통지(A/N) 예시 — 포워더 3곳의 서로 다른 양식(모두 지어낸 것, 실제 A/N 샘플을 받기 전의 가정) ─────
+     ① Alpha Logistics: 영문 「라벨 : 값」 줄, 선명/항차 한 칸, 21-SEP-2026 날짜
+     ② 베타해운: 국문 HTML 표(base64), 2026.10.08 날짜, B/L 은 제목과 표에
+     ③ Gamma Air & Ocean: 라벨 다음 줄에 값(표를 줄 단위로 복사한 모양), Oct 25, 2026 날짜, lb 중량, PO 번호 없이 B/L 만
+     ④ Alpha Logistics 수정 A/N: ①과 같은 B/L, ETA 변경(OLD/NEW) */
+  function anMails(today) {
+    var MON3 = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+    var MONL = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    function p(n) { return shift(today, n).split('-').map(Number); }
+    function dmy(n) { var d = p(n); return (d[2] < 10 ? '0' : '') + d[2] + '-' + MON3[d[1] - 1] + '-' + d[0]; }
+    function dot(n) { return shift(today, n).replace(/-/g, '.'); }
+    function mdy(n) { var d = p(n); return MONL[d[1] - 1] + ' ' + (d[2] < 10 ? '0' : '') + d[2] + ', ' + d[0]; }
+    function hdr(n, hh) { return new Date(shift(today, n) + 'T' + hh + ':00Z').toUTCString().replace('GMT', '+0000'); }
+    function eml(from, subject, date, ctype, body, cte) {
+      return 'From: ' + from + '\r\nTo: buyer@our-company.example.com\r\nSubject: ' + subject + '\r\nDate: ' + date +
+        '\r\nMIME-Version: 1.0\r\nContent-Type: ' + ctype + (cte ? '\r\nContent-Transfer-Encoding: ' + cte : '') + '\r\n\r\n' + body + '\r\n';
+    }
+    var plain = 'text/plain; charset="UTF-8"';
+    var an1 = [
+      'ARRIVAL NOTICE  (SAMPLE - NOT A REAL SHIPMENT)',
+      '',
+      'Dear Customer,',
+      'Please be advised that the following shipment will arrive as below.',
+      '',
+      'HBL NO.        : ALGS2609001',
+      'MBL NO.        : EXMU000000000001',
+      'VESSEL / VOY   : EXAMPLE STAR / 012E',
+      'POL            : HAMBURG, GERMANY',
+      'POD            : BUSAN, KOREA',
+      'ETD            : ' + dmy(-2),
+      'ETA            : ' + dmy(26),
+      'CONTAINER      : EXMU1234565 / 40HC',
+      'PACKAGES       : 6 PLTS',
+      'GROSS WEIGHT   : 2,480.50 KGS',
+      'SHIPPER        : ALPHA PRECISION GMBH (SAMPLE)',
+      'CONSIGNEE      : EXAMPLE BUYER CO., LTD. (SAMPLE)',
+      'PO NO.         : EX4500010002',
+      '',
+      'Please arrange customs clearance documents before arrival.',
+      '',
+      'Best regards,',
+      'Import Team',
+      'Alpha Logistics Co., Ltd. (sample)'
+    ].join('\r\n');
+    var an2html = '<p>' + '예시 고객사 담당자님, 아래 화물의 도착 예정을 알려 드립니다. (예시 — 실제 화물 아님)' + '</p>' +
+      '<table border="1"><tr><th>B/L 번호</th><td>BTSH26090055</td><th>선명/항차</th><td>EXAMPLE OCEAN / 2609W</td></tr>' +
+      '<tr><th>출항일</th><td>' + dot(-1) + '</td><th>입항예정일</th><td>' + dot(4) + '</td></tr>' +
+      '<tr><th>선적항</th><td>SHANGHAI, CHINA</td><th>양하항</th><td>부산 신항</td></tr>' +
+      '<tr><th>컨테이너 번호</th><td>EXGU7654326 (20GP)</td><th>포장수량</th><td>35 CTNS</td></tr>' +
+      '<tr><th>총중량</th><td>812 KG</td><th>발주번호(REF)</th><td>EX4500010005</td></tr></table>' +
+      '<p>도착 후 D/O 발급을 위해 운임 정산을 부탁드립니다.<br>베타해운 수입팀 (예시)</p>';
+    var an3 = [
+      'Gamma Air & Ocean (sample) - Arrival Notice',
+      'This is a fictitious notice for testing.',
+      '',
+      'Bill of Lading No.',
+      'GMAO26090077',
+      'Vessel Name',
+      'EXAMPLE PIONEER',
+      'Voyage No.',
+      'V.031W',
+      'Port of Loading',
+      'LOS ANGELES, CA',
+      'Port of Discharge',
+      'BUSAN, KOREA',
+      'On Board Date',
+      mdy(-24),
+      'Estimated Arrival',
+      mdy(5),
+      'Container No.',
+      'EXTU2223334 40HQ, EXTU5556660 40HQ',
+      'No. of Packages',
+      '18 CASES',
+      'Gross Weight',
+      '9,920 LBS',
+      '',
+      'Kind regards,',
+      'Gamma Air & Ocean (sample)'
+    ].join('\r\n');
+    var an4 = [
+      'REVISED ARRIVAL NOTICE  (SAMPLE - NOT A REAL SHIPMENT)',
+      '',
+      'Please note the ETA has been changed due to port congestion.',
+      '',
+      'HBL NO.        : ALGS2609001',
+      'VESSEL / VOY   : EXAMPLE STAR / 012E',
+      'OLD ETA        : ' + dmy(26),
+      'NEW ETA        : ' + dmy(30),
+      'PO NO.         : EX4500010002',
+      '',
+      'Best regards,',
+      'Import Team',
+      'Alpha Logistics Co., Ltd. (sample)'
+    ].join('\r\n');
+    return [
+      { name: '예시데이터_AN1_Alpha_Logistics.eml', text: eml('Alpha Logistics Import (sample) <import@alpha-logistics.example.com>', 'ARRIVAL NOTICE / HBL: ALGS2609001 / PO EX4500010002', hdr(-2, '01:10'), plain, an1) },
+      { name: '예시데이터_AN2_베타해운_국문.eml', text: eml('=?utf-8?B?' + b64utf8('베타해운 수입팀(예시)') + '?= <an@beta-shipping.example.com>', '=?utf-8?B?' + b64utf8('[화물도착통지] B/L BTSH26090055 / 선명 EXAMPLE OCEAN') + '?=', hdr(-1, '00:40'), 'text/html; charset="utf-8"', wrap76(b64utf8(an2html)).replace(/\r\n$/, ''), 'base64') },
+      { name: '예시데이터_AN3_Gamma_AirOcean.eml', text: eml('"Gamma Air & Ocean (sample)" <notice@gamma-airocean.example.com>', 'Arrival Notice - B/L GMAO26090077', hdr(-1, '06:05'), plain, an3) },
+      { name: '예시데이터_AN4_Alpha_Logistics_수정.eml', text: eml('Alpha Logistics Import (sample) <import@alpha-logistics.example.com>', 'REVISED ARRIVAL NOTICE / HBL: ALGS2609001 - ETA CHANGED', hdr(0, '00:20'), plain, an4) }
+    ];
+  }
+
   var api = { contactRows: contactRows, ledger: ledger, poPdfs: poPdfs, weeklyOld: weeklyOld, weeklyNew: weeklyNew, packingRows: packingRows, blWeights: blWeights, mails: mails, shift: shift,
     echoSupplier: echoSupplier, realPoLines: realPoLines, realPoPaste: realPoPaste, realLedger: realLedger, ocGrid: ocGrid, ocFiles: ocFiles, replyEml: replyEml,
     WOS_HEAD: WOS_HEAD, weeklyWk37: weeklyWk37, weeklyWk38: weeklyWk38,
-    foxSupplier: foxSupplier, cumLedger: cumLedger, CUM_HEAD: CUM_HEAD, cumGrid: cumGrid, cumPrevGrid: cumPrevGrid, CUM_AS_OF: CUM_AS_OF };
+    foxSupplier: foxSupplier, cumLedger: cumLedger, CUM_HEAD: CUM_HEAD, cumGrid: cumGrid, cumPrevGrid: cumPrevGrid, CUM_AS_OF: CUM_AS_OF, anMails: anMails };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.OMSample = api;
 })(typeof window !== 'undefined' ? window : this);

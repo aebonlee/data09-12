@@ -552,4 +552,132 @@ test('계획에 붙이기: 색 없는 밀림(O261300020)도 「다름」, 표시
   assert.equal(cplan.groups.find(x => x.po === 'O261300020').weekChanged, false);   // 지난주 파일을 안 올리면 판정 안 함
 });
 
+console.log('도착 통지(A/N) — 포워더 메일 읽기 · 항차등록 대기 · ETA 변경 (09-29 저녁 요청)');
+function anDb() {
+  const db = sampleDb();
+  db.pos = S.ledger(TODAY).map(p => L.cleanPo(p, db.suppliers));
+  return db;
+}
+function anRecs(db) {
+  return S.anMails(TODAY).map(m => L.parseArrivalNotice(L.parseEml(L.utf8(m.text), { tzOffsetMin: 540 }), db, { file: m.name, now: '2026-09-28T09:00:00Z' }));
+}
+const adb = anDb(); const ar = anRecs(adb);
+test('양식 ①(영문 「라벨 : 값」): B/L·Master B/L·선명/항차 한 칸·DD-MON-YYYY·컨테이너 크기·포장·중량·PO', () => {
+  const f = ar[0].fields;
+  assert.deepEqual([f.bl, f.mbl, f.vessel, f.voyage, f.etd, f.eta], ['ALGS2609001', 'EXMU000000000001', 'EXAMPLE STAR', '012E', '2026-09-26', '2026-10-24']);
+  assert.deepEqual([f.pol, f.pod, f.containers, f.packages, f.weight, f.pos], ['HAMBURG, GERMANY', 'BUSAN, KOREA', 'EXMU1234565(40HC)', '6 PLTS', '2,480.50 KGS', 'EX4500010002']);
+  assert.equal(f.forwarder, 'Alpha Logistics Import (sample)');     // 라벨이 없어 보낸 사람 이름
+  assert.match(ar[0].src.eta, /^ETA\s+: 24-OCT-2026$/);                // 근거 원문 줄
+  assert.match(ar[0].src.forwarder, /^From: /);
+});
+test('양식 ②(국문 HTML 표, base64): 칸 사이를 탭으로 읽어 한 줄의 여러 칸을 나눔, 2026.10.02 날짜, 발주번호(REF)', () => {
+  const f = ar[1].fields;
+  assert.deepEqual([f.bl, f.vessel, f.voyage, f.etd, f.eta, f.pol, f.pod], ['BTSH26090055', 'EXAMPLE OCEAN', '2609W', '2026-09-27', '2026-10-02', 'SHANGHAI, CHINA', '부산 신항']);
+  assert.deepEqual([f.containers, f.packages, f.weight, f.pos, f.forwarder], ['EXGU7654326(20GP)', '35 CTNS', '812 KG', 'EX4500010005', '베타해운 수입팀(예시)']);
+  assert.equal(ar[1].src.eta, '입항예정일 2026.10.02');                  // 표 한 줄에서 그 칸만
+});
+test('양식 ③(라벨 다음 줄에 값): Mon DD, YYYY, lb 중량 kg 환산, 컨테이너 2개, PO 번호 없음', () => {
+  const f = ar[2].fields;
+  assert.deepEqual([f.bl, f.vessel, f.voyage, f.etd, f.eta, f.pos], ['GMAO26090077', 'EXAMPLE PIONEER', 'V.031W', '2026-09-04', '2026-10-03', '']);
+  assert.equal(f.containers, 'EXTU2223334(40HQ), EXTU5556660(40HQ)');
+  assert.equal(L.weightKg(f.weight), 4499.64);                           // 9,920 lb × 0.45359237 = 4499.636… → 4499.64
+  assert.equal(ar[2].src.bl, 'Bill of Lading No. ⏎ GMAO26090077');
+});
+test('수정 A/N(OLD/NEW ETA): NEW ETA 를 먼저 읽음, 문장 속 「the ETA has been changed」는 값이 아님', () => {
+  assert.equal(ar[3].fields.eta, '2026-10-28');
+  assert.match(ar[3].src.eta, /^NEW ETA/);
+});
+L.anAddMails(adb, ar);
+const aq = L.anQueue(adb);
+test('대장 연결: PO 번호 2건, 대장 B/L 로 1건(Gamma), 대장에 없는 A/N 0, ETA 빠른 순', () => {
+  assert.deepEqual(aq.rows.map(r => [r.po_no, r.bl, r.via]), [['EX4500010005', 'BTSH26090055', 'PO 번호'], ['EX4500010003', 'GMAO26090077', 'B/L'], ['EX4500010002', 'ALGS2609001', 'PO 번호']]);
+  assert.equal(aq.unmatched.length, 0);
+  assert.equal(aq.pending.length, 3);
+});
+test('같은 B/L 의 새 A/N: 받은 순서로 ETA 변경 이전 → 이후, 두 통이 한 건', () => {
+  const r = aq.rows.find(x => x.po_no === 'EX4500010002');
+  assert.equal(r.anCount, 2); assert.equal(r.eta, '2026-10-28');
+  assert.deepEqual(r.etaChanges.map(c => [c.from, c.to, c.days]), [['2026-10-24', '2026-10-28', 4]]);
+  assert.equal(aq.etaChanged.length, 1);
+  // 수정본을 먼저 올려도 받은 시각으로 정렬
+  const g = L.anGroups([ar[3], ar[0]]);
+  assert.deepEqual(g[0].etaChanges.map(c => c.from + '>' + c.to), ['2026-10-24>2026-10-28']);
+});
+test('같은 메일을 두 번 올리면 건너뜀', () => {
+  const d = anDb(); L.anAddMails(d, anRecs(d));
+  assert.deepEqual(L.anAddMails(d, anRecs(d)), { added: 0, skipped: 4 });
+});
+test('대장 반영: A/N 수신·B/L(빈 칸만)·최근 ETA·ETD(빈 칸만)', () => {
+  const d = anDb(); L.anAddMails(d, anRecs(d));
+  assert.equal(L.anSyncToPos(d), 3);
+  const p2 = d.pos.find(p => p.po_no === 'EX4500010002');
+  assert.deepEqual([p2.an_received, p2.bl_no, p2.eta, p2.etd], [true, 'ALGS2609001', '2026-10-28', '2026-09-26']);
+  assert.equal(L.anSyncToPos(d), 0);                                     // 두 번째는 바뀔 것 없음
+  assert.equal(L.ledgerRows(d, TODAY).find(r => r['PO 번호'] === 'EX4500010002')['B/L 번호'], 'ALGS2609001');
+});
+test('항차등록 완료·이력 → 등록 후 ETA 변경 표시 → 조정 ETA 반영 → 등록 취소', () => {
+  const d = anDb(); const rs = anRecs(d);
+  L.anAddMails(d, [rs[0], rs[1], rs[2]]);                               // 수정 A/N 은 아직 안 옴
+  let q = L.anQueue(d);
+  L.anRegister(d, q.pending.filter(r => r.po_no === 'EX4500010002'), '2026-09-28', 'T1');
+  q = L.anQueue(d);
+  assert.deepEqual([q.pending.length, q.done.length, q.done[0].reg.date, q.done[0].reg.eta], [2, 1, '2026-09-28', '2026-10-24']);
+  assert.equal(L.anRegDateOf(d, 'EX4500010002'), '2026-09-28');
+  L.anAddMails(d, [rs[3]]);                                              // 수정 A/N 도착
+  q = L.anQueue(d);
+  assert.deepEqual(q.done[0].etaAfterReg, { from: '2026-10-24', to: '2026-10-28' });
+  assert.equal(q.pending.length, 2);                                     // 대기로 되돌리지 않고 완료 목록에서 빨간 표시
+  assert.equal(L.anConfirmEta(d, q.done[0], 'T2'), true);
+  q = L.anQueue(d);
+  assert.equal(q.done[0].etaAfterReg, null);
+  assert.equal(L.anUnregister(d, q.done[0], 'T3'), true);
+  q = L.anQueue(d);
+  assert.deepEqual([q.pending.length, q.done.length], [3, 0]);
+  assert.deepEqual(d.an.history.map(e => e.action), ['register', 'eta_confirm', 'unregister']);
+  assert.ok(L.anHistory(d).some(e => e.action === 'eta_change' && e.eta_from === '2026-10-24' && e.eta === '2026-10-28'));
+  assert.equal(L.anHistoryRows(d).length, 4);
+});
+test('대장에 없는 PO 번호만 적힌 A/N 은 「붙지 않은 A/N」, 대장에서 A/N·B/L 을 손으로 적은 PO 는 대기에 포함', () => {
+  const d = anDb();
+  const rec = L.parseArrivalNotice({ subject: 'Arrival Notice', body: 'B/L NO : ZZZZ26000001\nETA : 2026-10-10\nPO NO : M269999999', from: 'x@fw.example.com', fromAddr: 'x@fw.example.com' }, d, {});
+  L.anAddMails(d, [rec]);
+  d.pos.find(p => p.po_no === 'EX4500010001').bl_no = 'HAND0000001';     // an_received 는 예시에서 이미 true
+  const q = L.anQueue(d);
+  assert.deepEqual(q.unmatched.map(u => u.unknown), [['M269999999']]);
+  assert.deepEqual(q.pending.map(r => [r.po_no, r.via]), [['EX4500010001', '대장'], ['EX4500010003', '대장']]);   // 03 은 예시 대장에 B/L·A/N 이 이미 있음
+  assert.equal(rec.fields.forwarder, 'fw.example.com');                  // 이름 없는 주소면 도메인
+});
+test('라벨 규칙의 함정: POLAND·GWANGYANG 은 라벨 아님, 문장 속 vessel 은 값 아님, 「ETA BUSAN :」, 「ETD/ETA : a / b」, 「POL / POD」', () => {
+  const t = [
+    'We ship from POLAND via GWANGYANG port.',
+    'The following vessel will arrive soon.',
+    'ETD/ETA : 2026-09-01 / 2026-09-20',
+    'ETA BUSAN : 22 Sep 2026',
+    'POL / POD : ANTWERP / INCHEON',
+    'Vessel : EXAMPLE WIND V.123E',
+    'BL NO. EXBL26001234   GW 1,200 KGS'
+  ].join('\n');
+  const f = L.parseArrivalNotice({ subject: '', body: t }, L.emptyDb(), {}).fields;
+  assert.deepEqual([f.etd, f.eta, f.pol, f.pod, f.vessel, f.bl, f.weight], ['2026-09-01', '2026-09-20', 'ANTWERP', 'INCHEON', 'EXAMPLE WIND V.123E', 'EXBL26001234', '1,200 KGS']);
+});
+test('날짜 모양: 일/월 헷갈리는 12/10/2026 은 설정 순서대로 읽고 확인 메모, 국문 연월일', () => {
+  const a = L.parseArrivalNotice({ subject: '', body: 'ETA : 12/10/2026' }, L.emptyDb(), {});
+  const b = L.parseArrivalNotice({ subject: '', body: 'ETA : 12/10/2026' }, L.emptyDb(), { dayFirst: true });
+  assert.deepEqual([a.fields.eta, b.fields.eta], ['2026-12-10', '2026-10-12']);
+  assert.equal(a.notes.length, 1);
+  assert.equal(L.parseArrivalNotice({ subject: '', body: '입항예정일: 2026년 10월 8일' }, L.emptyDb(), {}).fields.eta, '2026-10-08');
+  assert.deepEqual(L.datesIn('from 20-OCT-2026 to Oct 24, 2026').map(d => d.iso), ['2026-10-20', '2026-10-24']);
+});
+test('붙여넣은 글: 머리글이 있으면 메일 원문으로, 없으면 본문으로', () => {
+  const m = L.anMailFromText(S.anMails(TODAY)[0].text);
+  assert.equal(m.subject, 'ARRIVAL NOTICE / HBL: ALGS2609001 / PO EX4500010002');
+  assert.equal(L.anMailFromText('HBL NO : X1\nETA : 2026-10-01').subject, '');
+});
+test('CSV: BOM, 쉼표·따옴표 칸은 따옴표로 / 대장 가져오기 열 짐작에 B/L 번호·ETA', () => {
+  const c = L.toCsv([{ a: 'x,y', b: 'say "hi"' }, { a: 1, c: '' }]);
+  assert.equal(c, '﻿a,b,c\r\n"x,y","say ""hi""",\r\n1,,\r\n');
+  const m = L.guessMapping(['PO 번호', 'B/L 번호', 'ETA', '선적 예정일(ETD)'], 'ledger');
+  assert.deepEqual([m.bl_no, m.eta, m.etd], ['B/L 번호', 'ETA', '선적 예정일(ETD)']);
+});
+
 console.log('\n' + passed + '개 통과' + (process.exitCode ? ' — 실패 있음' : ''));

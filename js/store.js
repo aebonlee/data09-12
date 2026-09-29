@@ -26,6 +26,11 @@
       if (t && typeof t.subject === 'string' && typeof t.body === 'string') db.templates[k] = { subject: t.subject, body: t.body };
     });
     db.mappings = p.mappings && typeof p.mappings === 'object' ? p.mappings : {};
+    if (p.an && typeof p.an === 'object') db.an = {
+      mails: Array.isArray(p.an.mails) ? p.an.mails : [],
+      regs: p.an.regs && typeof p.an.regs === 'object' ? p.an.regs : {},
+      history: Array.isArray(p.an.history) ? p.an.history : []
+    };
     if (p._sample) db._sample = true;
     return db;
   }

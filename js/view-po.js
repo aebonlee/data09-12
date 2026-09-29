@@ -4,6 +4,7 @@
   var L = root.OMLogic, S = root.OMSample, App = root.OM, h = App.h;
 
   /* ── PDF 본문 읽기(pdf.js, 브라우저 안에서만) ─────────────────────────────── */
+  App.pdfText = function (b) { return pdfText(b); };   // 도착 통지(A/N) 화면의 PDF 첨부 읽기에도 씀
   function pdfText(bytes) {
     if (!root.pdfjsLib) return Promise.reject(new Error('PDF 라이브러리를 불러오지 못했습니다'));
     var task = root.pdfjsLib.getDocument({ data: bytes.slice(0), cMapUrl: 'vendor/cmaps/', cMapPacked: true, isEvalSupported: false });
@@ -246,7 +247,8 @@
     f.supplier_code = App.supplierSelect(p.supplier_code);
     f.item = h('input', { type: 'text', value: p.item });
     f.oc_no = h('input', { type: 'text', value: p.oc_no || '' });
-    ['po_date', 'sent_date', 'oc_date', 'exw_promised', 'exw_actual', 'etd', 'delivery_date'].forEach(function (k) { f[k] = h('input', { type: 'date', value: p[k] || '' }); });
+    f.bl_no = h('input', { type: 'text', value: p.bl_no || '' });
+    ['po_date', 'sent_date', 'oc_date', 'exw_promised', 'exw_actual', 'etd', 'delivery_date', 'eta'].forEach(function (k) { f[k] = h('input', { type: 'date', value: p[k] || '' }); });
     var voyage = Object.assign({}, p.voyage || {});
     f.an_received = h('input', { type: 'checkbox', checked: p.an_received });
     f.docs_received = h('input', { type: 'checkbox', checked: p.docs_received });
@@ -258,6 +260,7 @@
         App.field('송부일', f.sent_date), App.field('OC 수령일', f.oc_date, '공급사 회신 메일을 받은 날'),
         App.field('OC 번호', f.oc_no), App.field('PO 납기', f.delivery_date, '구매발주서의 Contract Delivery Date'),
         App.field('약속 EXW DATE', f.exw_promised, 'OC DATE(출하 예정일) — 매뉴얼상 SRM EXW DATE에 넣는 값'), App.field('실제 출고일', f.exw_actual), App.field('선적 예정일(ETD)', f.etd),
+        App.field('B/L 번호', f.bl_no, '도착 통지(A/N)를 이 PO에 붙이는 열쇠 — PO 번호가 없는 A/N도 B/L로 찾습니다'), App.field('ETA(도착 예정일)', f.eta, 'A/N을 읽으면 가장 최근 ETA로 바뀝니다'),
         h('div', null, h('label', { class: 'check' }, f.an_received, 'A/N 수신'), h('label', { class: 'check' }, f.docs_received, '선적서류 수신')),
         h('div', { class: 'span-all' }, App.field('메모', f.note))),
       p.lines && p.lines.length ? h('details', { class: 'card', style: 'margin:16px 0 0' }, h('summary', null, h('strong', null, 'PO 품목 ' + p.lines.length + '줄')),

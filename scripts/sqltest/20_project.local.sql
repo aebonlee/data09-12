@@ -85,6 +85,42 @@ begin
 end $t$;
 commit;
 
+-- 도착 통지(A/N) · 항차등록 · 이력 (2026-09-29 저녁 추가)
+begin;
+set local request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
+set local role authenticated;
+do $t$
+declare n bigint;
+begin
+  update public.purchase_order set bl_no = 'ALGS2609001', eta = '2026-10-24', an_received = true where po_no = 'EX4500010001';
+  insert into public.arrival_notice (mail_key, forwarder, bl_no, vessel, voyage, eta, po_nos, src, body)
+  values ('an1abc', 'Alpha Logistics (예시)', 'ALGS2609001', 'EXAMPLE STAR', '012E', '2026-10-24', 'EX4500010001',
+          '{"eta": "ETA : 24-OCT-2026"}'::jsonb,
+$txt$HBL NO. : ALGS2609001
+ETA     : 24-OCT-2026$txt$);
+  perform public._assert_raises($s$insert into public.arrival_notice (mail_key) values ('an1abc')$s$,
+    '23505', '같은 A/N 메일은 한 번만 저장된다');
+  perform public._assert_raises($s$insert into public.arrival_notice (mail_key, src) values ('an2', '[]'::jsonb)$s$,
+    '23514', 'A/N 근거 원문(src)은 JSON 객체다');
+  insert into public.voyage_registration (po_no, bl_key, bl_no, registered_on, eta_at_registration)
+  values ('EX4500010001', 'ALGS2609001', 'ALGS2609001', '2026-09-29', '2026-10-24');
+  perform public._assert_raises($s$insert into public.voyage_registration (po_no, bl_key, registered_on) values ('EX4500010001', 'ALGS2609001', '2026-09-30')$s$,
+    '23505', '같은 PO × B/L 의 항차등록은 한 줄이다');
+  perform public._assert_raises($s$insert into public.voyage_registration (po_no, bl_key, registered_on) values ('EX4500010001', 'algs-2609', '2026-09-30')$s$,
+    '23514', 'bl_key 는 영문 대문자·숫자만');
+  insert into public.voyage_history (action, po_no, bl_no, registered_on, eta) values ('register', 'EX4500010001', 'ALGS2609001', '2026-09-29', '2026-10-24');
+  perform public._assert_raises($s$insert into public.voyage_history (action, po_no) values ('delete_all', 'EX4500010001')$s$,
+    '23514', '이력 구분은 register·unregister·eta_confirm 만');
+  perform public._assert_raises($s$update public.voyage_history set eta = '2026-12-31'$s$,
+    '42501', '이력은 본인도 고칠 수 없다 (UPDATE 권한 없음)');
+  perform public._assert_raises($s$delete from public.voyage_history$s$,
+    '42501', '이력은 본인도 지울 수 없다 (DELETE 권한 없음)');
+  perform public._assert_eq((select count(*) from public.voyage_history), 1::bigint, '이력 1줄이 그대로 남는다');
+  perform public._assert((select strpos(body, E'\n') > 0 from public.arrival_notice where mail_key = 'an1abc'),
+    'A/N 본문 여러 줄이 실제 줄바꿈으로 저장된다');
+end $t$;
+commit;
+
 -- ----------------------------------------------------------------------------
 -- 2. 사용자 B — A 의 행을 보지도, 고치지도, 지우지도, 대신 쓰지도 못한다
 -- ----------------------------------------------------------------------------
@@ -96,8 +132,10 @@ declare n bigint;
 begin
   perform public._assert_eq(
     (select count(*) from public.workspace) + (select count(*) from public.mail_template)
-    + (select count(*) from public.supplier) + (select count(*) from public.purchase_order),
-    0::bigint, 'B 에게는 A 의 행이 4개 표 어디에서도 보이지 않는다');
+    + (select count(*) from public.supplier) + (select count(*) from public.purchase_order)
+    + (select count(*) from public.arrival_notice) + (select count(*) from public.voyage_registration)
+    + (select count(*) from public.voyage_history),
+    0::bigint, 'B 에게는 A 의 행이 7개 표 어디에서도 보이지 않는다');
 
   update public.supplier set to_addr = 'attacker@example.com' where code = 'EX-A01';
   get diagnostics n = row_count;
@@ -155,7 +193,7 @@ set local role anon;
 do $t$
 declare t text;
 begin
-  foreach t in array array['workspace','mail_template','supplier','purchase_order']
+  foreach t in array array['workspace','mail_template','supplier','purchase_order','arrival_notice','voyage_registration','voyage_history']
   loop
     perform public._assert_raises(format('select * from public.%I', t), '42501', 'anon 은 ' || t || ' 를 읽을 수 없다');
   end loop;
@@ -181,7 +219,7 @@ begin
 
   perform public._assert_eq((select count(*) from pg_policy p join pg_class c on c.oid = p.polrelid
      join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public'),
-    16::bigint, '정책 수가 16개다 (4개 표 × 4, 재실행해도 늘지 않는다)');
+    26::bigint, '정책 수가 26개다 (6개 표 × 4 + 이력 2, 재실행해도 늘지 않는다)');
 end $t$;
 
 -- ----------------------------------------------------------------------------
@@ -254,7 +292,10 @@ begin
     'anon 에 표 권한이 남지 않았다 (Supabase 자동 부여를 끊었다)' || coalesce(' (발견: ' || v_bad || ')', ''));
 end $t$;
 
--- 정리
+-- 정리 (슈퍼유저로 — 이력도 지운다)
+delete from public.voyage_history;
+delete from public.voyage_registration;
+delete from public.arrival_notice;
 delete from public.purchase_order;
 delete from public.supplier;
 delete from public.mail_template;

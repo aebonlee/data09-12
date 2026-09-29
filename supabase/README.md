@@ -23,7 +23,10 @@ DB 에 연결하는 코드는 다음 단계에서 붙입니다.
 | `workspace` | 판단 기준값(OC 대기·EXW 임박·출고 준수·중량 허용 오차), PO 번호 규칙, OC 키워드, 보내는 사람 정보, 엑셀 열 매핑, 예시 여부 (1인 1행) | `data09-12.db` 의 `settings` · `mappings` · `_sample` |
 | `mail_template` | 상황별 영문 메일 문안 5종(발주·OC 팔로우업·납기 확인·선적서류 요청·A/N 확인) | `data09-12.db` 의 `templates{}` |
 | `supplier` | 업체 마스터 (Contact List) | `data09-12.db` 의 `suppliers[]` |
-| `purchase_order` | PO 관리 대장 | `data09-12.db` 의 `pos[]` |
+| `purchase_order` | PO 관리 대장 (2026-09-29 저녁: `bl_no`·`eta` 칸 추가) | `data09-12.db` 의 `pos[]` |
+| `arrival_notice` | 포워더 도착 통지(A/N) 메일에서 읽은 값 — 메일 한 통이 한 줄, 칸별 근거 원문(`src`)과 처음 읽은 값(`parsed`) | `data09-12.db` 의 `an.mails[]` |
+| `voyage_registration` | 항차등록 완료 표시 — PO 번호 × B/L 한 줄, 등록일과 등록 때 ETA | `data09-12.db` 의 `an.regs{}` |
+| `voyage_history` | 항차등록 완료·취소·조정 ETA 반영 이력(기록성) | `data09-12.db` 의 `an.history[]` |
 
 필드 이름은 도구의 이름을 그대로 썼습니다.
 SQL 예약어와 겹치는 업체의 `to`(수신 메일)만 `to_addr` 로 바꿨습니다.
@@ -32,7 +35,7 @@ SQL 예약어와 겹치는 업체의 `to`(수신 메일)만 `to_addr` 로 바꿨
 `purchase_order.supplier_code` 는 업체 마스터에 외래키로 묶지 않았습니다.
 도구가 업체 마스터에 없는 코드의 PO 도 대장에 남기고 「업체 미등록」으로 표시하기 때문입니다.
 
-이 도구에는 변경 이력이나 로그 같은 기록성 데이터가 없습니다.
+기록성 데이터는 `voyage_history` 하나입니다. 읽기·쓰기 정책과 권한만 두어, 본인도 고치거나 지울 수 없습니다(등록을 취소하면 「등록 취소」 줄이 새로 쌓입니다). A/N 의 ETA 변경 이력은 저장하지 않고 `arrival_notice` 의 받은 순서에서 계산합니다.
 
 ### 권한
 
@@ -58,9 +61,9 @@ SQL 예약어와 겹치는 업체의 `to`(수신 메일)만 `to_addr` 로 바꿨
 
 ## 확인 방법
 
-1. 왼쪽 메뉴 **Table Editor** 에 위 4개 표가 보이는지 확인합니다.
+1. 왼쪽 메뉴 **Table Editor** 에 위 7개 표가 보이는지 확인합니다.
 2. 각 표 이름 옆에 RLS 가 켜져 있는지(「RLS disabled」 경고가 없는지) 확인합니다.
-3. **Authentication → Policies** 에서 표마다 SELECT·INSERT·UPDATE·DELETE 정책 4개가 붙어 있는지 봅니다.
+3. **Authentication → Policies** 에서 표마다 SELECT·INSERT·UPDATE·DELETE 정책 4개(`voyage_history` 는 SELECT·INSERT 2개)가 붙어 있는지 봅니다.
 4. SQL Editor 에서 아래를 실행해 함수 권한에 `anon` 이 없는지 봅니다.
 
 ```sql
