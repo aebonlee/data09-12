@@ -453,30 +453,43 @@ test('머리글 없는 붙여넣기는 열1·열2…, lb → kg 환산 1000lb = 
   assert.equal(Math.round(1000 * L.LB_TO_KG * 1000) / 1000, 453.592);
 });
 
-console.log('Cummins 분석 시트 → 대장 EXW DATE (메일 추가 요청 2)');
+console.log('Cummins 분석 시트 → 대장 EXW DATE (메일 추가 요청 2, 09-29 오후 늦게 답변 반영)');
 const cg = S.cumGrid();
 const crows = L.cumminsRows(cg.grid, cg.yellow);
 const cpos = () => S.cumLedger(TODAY).map(p => L.cleanPo(p, []));
-const cplan = L.cumminsExwPlan(crows.rows, cpos(), { status: 'Undispatched', gubun: 'HCE' });
-test('2행 머리글 찾기, 합계 줄(PO·품번 없음)은 뺌, 노란 줄 4개 표시', () => {
-  assert.equal(crows.headerRow, 2); assert.equal(crows.rows.length, 9);
-  assert.equal(crows.rows.filter(r => r.yellow).length, 4);
+const COPT = { status: 'Undispatched', gubun: 'HCE', asOf: S.CUM_AS_OF };
+const cplan = L.cumminsExwPlan(crows.rows, cpos(), COPT);
+test('2행 머리글 찾기, 합계 줄(PO·품번 없음)은 뺌, 노란 줄 4개 표시, INV# 열 있음', () => {
+  assert.equal(crows.headerRow, 2); assert.equal(crows.rows.length, 10);
+  assert.equal(crows.rows.filter(r => r.yellow).length, 4); assert.equal(crows.hasInv, true);
 });
-test('거르기: Status=Undispatched(대소문자·공백 무시) · 구분=HCE → 6줄 5묶음, HDX·Dispatched 제외', () => {
-  assert.equal(cplan.counts.target, 6); assert.equal(cplan.counts.groups, 5);
+test('Status 오늘 기준 재계산 = 파일 수식 IF(INV# 빔, IF(Promise<TODAY,Abnormal,Undispatched), Dispatched)', () => {
+  const f = (inv, promise, promiseRaw) => L.cumminsStatusAsOf({ inv, promise, promiseRaw }, '2026-09-28');
+  assert.equal(f('INV-1', '2026-01-01', ''), 'Dispatched');
+  assert.equal(f('', '2026-09-27', ''), 'Abnormal');
+  assert.equal(f('', '2026-09-28', ''), 'Undispatched');        // 같은 날은 < 가 아니므로 Undispatched
+  assert.equal(f('', '', ''), 'Abnormal');                      // 빈 칸은 엑셀에서 0 으로 비교
+  assert.equal(f('', '', 'cancelled'), 'Undispatched');         // 글자는 숫자보다 크게 비교
+  assert.equal(L.cumminsStatusAsOf({ status: 'x', inv: '', promise: '2026-12-01' }, '2026-09-28'), 'x');   // 손으로 적은 값은 그대로
+  assert.equal(L.cumminsStatusAsOf({ status: ' undispatched ', inv: '', promise: '2026-09-01' }, '2026-09-28'), 'Abnormal');
+});
+test('거르기(기본값): 오늘 기준 Undispatched · HCE → Abnormal 1줄 제외, 6줄 5묶음, HDX·Dispatched 제외', () => {
+  assert.equal(cplan.counts.target, 6); assert.equal(cplan.counts.groups, 5); assert.equal(cplan.counts.restatus, 1);
+  assert.ok(!cplan.target.some(r => r.po === 'M261300090'));                            // 저장값 Undispatched, 기준일 기준 Abnormal
   assert.ok(!cplan.groups.concat(cplan.notInLedger).some(g => g.po === 'M261300040'));   // HDX
   assert.equal(cplan.counts.yellow, 2);                                                 // 노란 줄 중 거른 뒤 남는 것(분할 2줄)
+  assert.equal(L.cumminsExwPlan(crows.rows, cpos(), { status: 'Undispatched', gubun: 'HCE' }).counts.target, 7);  // 저장값 그대로면 7줄(대소문자·공백 무시)
 });
 test('분할 선적: 같은 PO·품번 두 날짜 10+6 = 16 = PO 수량 → 일치, 노란 줄·EXW 변경(10-07 → 10-14·10-28)', () => {
   const g = cplan.groups.find(x => x.po === 'M261300011');
   assert.deepEqual(g.schedule.map(x => [x.date, x.qty, x.yellow]), [['2026-10-14', 10, true], ['2026-10-28', 6, true]]);
-  assert.equal(g.fileQty, 16); assert.equal(g.state, 'match'); assert.equal(g.yellow, true); assert.equal(g.changed, true);
+  assert.equal(g.remainQty, 16); assert.equal(g.state, 'match'); assert.equal(g.yellow, true); assert.equal(g.changed, true);
 });
-test('수량 불일치: 출고 2 + 남은 4 = 6 < PO 8 (부족 2), 파일 12 > OC 10 (초과 2)', () => {
+test('수량 대조는 거른(미선적) 줄만: 남은 4 vs PO 8 → 부족 4(출고 2 는 참고), 12 vs OC 10 → 초과 2', () => {
   const a = cplan.groups.find(x => x.po === 'O261300020');
-  assert.deepEqual([a.dispatchedQty, a.remainQty, a.fileQty, a.state], [2, 4, 6, 'check']);
-  assert.deepEqual(a.issues, ['파일 수량 합 6 ≠ PO 수량 8(부족 2)']);
-  assert.deepEqual(cplan.groups.find(x => x.po === 'B261300030').issues, ['파일 수량 합 12 ≠ OC 수량 10(초과 2)']);
+  assert.deepEqual([a.outsideQty, a.remainQty, a.state], [2, 4, 'check']);
+  assert.deepEqual(a.issues, ['미선적 수량 합 4 ≠ PO 수량 8(부족 4)']);
+  assert.deepEqual(cplan.groups.find(x => x.po === 'B261300030').issues, ['미선적 수량 합 12 ≠ OC 수량 10(초과 2)']);
 });
 test('날짜 형식: 엑셀 일련번호 46309 · 글자 11/2/2026 · Date 객체', () => {
   assert.equal(cplan.groups.find(x => x.po === 'M261300060').schedule[0].date, '2026-11-02');
@@ -498,8 +511,45 @@ test('반영: 일치 2건만 고르면 그 PO만 바뀜, 약속 EXW = 가장 이
   assert.equal(r.changes[0].before_exw, '2026-10-07');
   assert.equal(L.exwPlanText(p), 'EXE-1001: 2026-10-14×10, 2026-10-28×6');
 });
-test('거르기 값을 비우면 전체(구분 HDX 포함)', () => {
-  assert.equal(L.cumminsExwPlan(crows.rows, cpos(), { status: '', gubun: '' }).counts.target, 9);
+test('거르기 값을 비우면 전체(구분 HDX·출고·Abnormal 포함)', () => {
+  assert.equal(L.cumminsExwPlan(crows.rows, cpos(), { status: '', gubun: '', asOf: S.CUM_AS_OF }).counts.target, 10);
+});
+test('SRM 입력 목록: 분할 선적은 건별 한 줄(1/2·2/2), 대장에 없는 PO 도 포함, cancelled 는 빠짐', () => {
+  const e = L.exwEntries(cplan.groups.concat(cplan.notInLedger));
+  assert.deepEqual(e.filter(x => x.po === 'M261300011').map(x => [x.seq, x.date, x.qty]), [['1/2', '2026-10-14', 10], ['2/2', '2026-10-28', 6]]);
+  assert.equal(e.length, 6);
+  assert.equal(e.find(x => x.po === 'M261300050').inLedger, false);
+  assert.equal(L.exwEntries([{ po: 'X', part: 'P', state: 'match', schedule: [{ date: 'cancelled', qty: 1, rows: [1], week: [] }] }]).length, 0);
+});
+
+console.log('지난주 파일과 비교 → 달라진 줄 = 노란 표시 (09-29 오후 늦게 답변 4)');
+const prev = L.cumminsRows(S.cumPrevGrid().grid, {}).rows;
+const wd = L.cumminsWeekDiff(prev, crows.rows);
+test('SO# 까지 키로 맞춤: 달라진 줄 2(날짜·수량 / 날짜), 새 줄 1(분할 추가), 빠진 줄 1', () => {
+  assert.deepEqual([wd.counts.changed, wd.counts.added, wd.counts.removed], [2, 1, 1]);
+  assert.deepEqual(wd.byRow[3].changes.map(c => [c.field, c.old, c.new]), [['Promise Date', '2026-10-07', '2026-10-14'], ['QTY', 16, 10]]);
+  assert.equal(wd.byRow[4].added, true);                                               // 80002 — 지난주에 없던 분할
+  assert.deepEqual(wd.byRow[6].changes.map(c => [c.old, c.new]), [['2026-09-28', '2026-10-05']]);
+  assert.deepEqual(wd.removed.map(r => r.po), ['M261300070']);
+});
+test('Status 만 바뀐 줄(Undispatched → Dispatched, INV# 생김)은 「다름」이 아님', () => {
+  assert.equal(wd.byRow[5], undefined);
+  assert.equal(wd.byRow[12], undefined);   // 같은 값(저장 Status 도 같음)
+});
+test('SO# 가 지난주엔 비어 있던 줄도 PO·품번 나온 순서로 맞춤', () => {
+  const p = [{ rowNo: 3, po: 'A1', part: 'P1', om: '', so: '', qty: 5, promise: '2026-10-01', promiseRaw: '' }];
+  const c = [{ rowNo: 3, po: 'A1', part: 'P1', om: '1', so: '90', qty: 5, promise: '2026-10-01', promiseRaw: '' }];
+  const d = L.cumminsWeekDiff(p, c);
+  assert.deepEqual([d.counts.same, d.counts.added, d.counts.removed], [1, 0, 0]);
+});
+test('계획에 붙이기: 색 없는 밀림(O261300020)도 「다름」, 표시 대상 = 노란 칠 ∪ 지난주와 다름 = 3줄', () => {
+  const pl = L.cumminsExwPlan(crows.rows, cpos(), Object.assign({ weekDiff: wd }, COPT));
+  assert.deepEqual([pl.counts.yellow, pl.counts.weekChanged, pl.counts.marked], [2, 3, 3]);
+  const o = pl.groups.find(x => x.po === 'O261300020');
+  assert.equal(o.yellow, false); assert.equal(o.weekChanged, true);
+  assert.deepEqual(o.schedule[0].week, ['Promise Date 2026-09-28 → 2026-10-05']);
+  assert.equal(L.weekNoteText(wd.byRow[4]), '지난주 파일에 없던 줄');
+  assert.equal(cplan.groups.find(x => x.po === 'O261300020').weekChanged, false);   // 지난주 파일을 안 올리면 판정 안 함
 });
 
 console.log('\n' + passed + '개 통과' + (process.exitCode ? ' — 실패 있음' : ''));

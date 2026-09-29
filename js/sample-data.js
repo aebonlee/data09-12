@@ -251,8 +251,33 @@
     [['엔진', 'HDX', 46150, 520030, 'M261300040', 'PLANT-B', 'EXE-4004', 'EX400', 'EXE-4004', 'ENG-C', 'Engine Assy', 80030, 2, 46290, 46310, '', '', '', 'OCEAN', 'Tier4', 'Undispatched'], true],
     [['엔진', 'HCE', 46160, 520040, 'M261300050', 'PLANT-A', 'EXE-5005', 'EX500', 'EXE-5005', 'ENG-A', 'Engine Assy', 80040, 3, 46300, 46330, '', '', '', 'OCEAN', 'Tier4', 'Undispatched'], false],
     [['엔진', 'HCE', 46170, 520050, 'M261300060', 'PLANT-A', 'EXE-6006', 'EX600', 'EXE-6006', 'ENG-A', 'Engine Assy', 80050, 5, 46300, '11/2/2026', '', '', '', 'OCEAN', 'Tier4', 'Undispatched'], false],
-    [['엔진', 'HCE', 46100, 520060, 'M261300080', 'PLANT-A', 'EXE-8008', 'EX800', 'EXE-8008', 'ENG-A', 'Engine Assy', 80060, 1, 46250, 46260, 46258, 'INV-0102', '', 'OCEAN', 'Tier4', 'Dispatched'], true]
+    [['엔진', 'HCE', 46100, 520060, 'M261300080', 'PLANT-A', 'EXE-8008', 'EX800', 'EXE-8008', 'ENG-A', 'Engine Assy', 80060, 1, 46250, 46260, 46258, 'INV-0102', '', 'OCEAN', 'Tier4', 'Dispatched'], true],
+    // 저장된 Status 는 Undispatched 지만 Promise Date(46285 = 2026-09-20)가 지났고 INV# 가 비어 → 오늘 기준으로는 Abnormal(제외 대상)
+    [['엔진', 'HCE', 46100, 520070, 'M261300090', 'PLANT-A', 'EXE-9009', 'EX900', 'EXE-9009', 'ENG-A', 'Engine Assy', 80070, 2, 46270, 46285, '', '', '', 'OCEAN', 'Tier4', 'Undispatched'], false]
   ];
+  var CUM_AS_OF = '2026-09-28';   // 예시 파일을 「저장한 날」 — 예시로 해 볼 때 Status 기준일
+  // 지난주(wk37) 분석 시트 예시 — 이번 주(cumData)와 비교해 달라진 줄을 찾는 데 씁니다. 값은 모두 지어낸 것.
+  //  · M261300011: 지난주엔 한 줄(16개, 10/07) → 이번 주 10개(10/14) + 6개(10/28, 새 SO#)로 분할
+  //  · O261300020 남은 줄: 9/28 → 10/05 로 밀렸지만 이번 주 파일에 노란 칠이 없음(색만 보면 놓치는 줄)
+  //  · O261300020 출고 줄: 지난주 Undispatched → 이번 주 Dispatched(Status 는 비교하지 않음)
+  //  · M261300070: 지난주에 있었고 이번 주에 없음
+  var cumPrevData = [
+    ['엔진', 'HCE', 46120, 520001, 'M261300011', 'PLANT-A', 'EXE-1001', 'EX100', 'EXE-1001', 'ENG-A', 'Engine Assy', 80001, 16, 46280, 46302, '', '', '', 'OCEAN', 'Tier4', 'Undispatched'],
+    ['엔진', 'HCE', 46130, 520010, 'O261300020', 'PLANT-B', 'EXE-2002', 'EX200', 'EXE-2002', 'ENG-B', 'Engine Assy', 80010, 2, 46270, 46275, '', '', '', 'OCEAN', 'StageV', 'Undispatched'],
+    ['엔진', 'HCE', 46130, 520011, 'O261300020', 'PLANT-B', 'EXE-2002', 'EX200', 'EXE-2002', 'ENG-B', 'Engine Assy', 80011, 4, 46270, 46293, '', '', '', 'OCEAN', 'StageV', 'Undispatched'],
+    ['부품', 'HCE', 46150, 520020, 'B261300030', 'PLANT-A', 'EXP-3003', 'EX300', 'EXP-3003', '', 'Turbo Kit', 80020, 12, 46290, 46315, '', '', '', 'AIR', '', 'Undispatched'],
+    ['엔진', 'HDX', 46150, 520030, 'M261300040', 'PLANT-B', 'EXE-4004', 'EX400', 'EXE-4004', 'ENG-C', 'Engine Assy', 80030, 2, 46290, 46310, '', '', '', 'OCEAN', 'Tier4', 'Undispatched'],
+    ['엔진', 'HCE', 46160, 520040, 'M261300050', 'PLANT-A', 'EXE-5005', 'EX500', 'EXE-5005', 'ENG-A', 'Engine Assy', 80040, 3, 46300, 46330, '', '', '', 'OCEAN', 'Tier4', 'Undispatched'],
+    ['엔진', 'HCE', 46170, 520050, 'M261300060', 'PLANT-A', 'EXE-6006', 'EX600', 'EXE-6006', 'ENG-A', 'Engine Assy', 80050, 5, 46300, '11/2/2026', '', '', '', 'OCEAN', 'Tier4', 'Undispatched'],
+    ['엔진', 'HCE', 46170, 520080, 'M261300070', 'PLANT-A', 'EXE-7007', 'EX700', 'EXE-7007', 'ENG-A', 'Engine Assy', 80080, 4, 46300, 46290, '', '', '', 'OCEAN', 'Tier4', 'Undispatched'],
+    ['엔진', 'HCE', 46100, 520060, 'M261300080', 'PLANT-A', 'EXE-8008', 'EX800', 'EXE-8008', 'ENG-A', 'Engine Assy', 80060, 1, 46250, 46260, 46258, 'INV-0102', '', 'OCEAN', 'Tier4', 'Dispatched'],
+    ['엔진', 'HCE', 46100, 520070, 'M261300090', 'PLANT-A', 'EXE-9009', 'EX900', 'EXE-9009', 'ENG-A', 'Engine Assy', 80070, 2, 46270, 46285, '', '', '', 'OCEAN', 'Tier4', 'Undispatched']
+  ];
+  function cumPrevGrid() {
+    var grid = [['예시 Integrated Order Status wk37 분석 (지어낸 값)'], CUM_HEAD.slice()];
+    cumPrevData.forEach(function (d) { grid.push(d.slice()); });
+    return { grid: grid, yellow: {} };
+  }
   // 엑셀 모양 그대로: 1행 제목, 2행 머리글, 3행부터 자료, 끝에 합계 줄. yellow = { 엑셀 행번호: true }
   function cumGrid() {
     var grid = [['예시 Integrated Order Status wk38 분석 (지어낸 값)'], CUM_HEAD.slice()];
@@ -265,7 +290,7 @@
   var api = { contactRows: contactRows, ledger: ledger, poPdfs: poPdfs, weeklyOld: weeklyOld, weeklyNew: weeklyNew, packingRows: packingRows, blWeights: blWeights, mails: mails, shift: shift,
     echoSupplier: echoSupplier, realPoLines: realPoLines, realPoPaste: realPoPaste, realLedger: realLedger, ocGrid: ocGrid, ocFiles: ocFiles, replyEml: replyEml,
     WOS_HEAD: WOS_HEAD, weeklyWk37: weeklyWk37, weeklyWk38: weeklyWk38,
-    foxSupplier: foxSupplier, cumLedger: cumLedger, CUM_HEAD: CUM_HEAD, cumGrid: cumGrid };
+    foxSupplier: foxSupplier, cumLedger: cumLedger, CUM_HEAD: CUM_HEAD, cumGrid: cumGrid, cumPrevGrid: cumPrevGrid, CUM_AS_OF: CUM_AS_OF };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.OMSample = api;
 })(typeof window !== 'undefined' ? window : this);

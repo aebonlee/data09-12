@@ -299,7 +299,7 @@
         step('#/followup', 'OC 팔로우업', 'OC 미접수 건을 업체별로 묶어 팔로우업 메일 초안을 만듭니다.'),
         step('#/kpi', '접수율·준수율', 'OC 접수율, EXW 준수율(%), 평균 지연일을 전체·업체별로 봅니다.'),
         step('#/promise', 'Promise Date', 'Cummins Weekly Order Status 두 주차(시트)를 비교해 Promise Date가 밀림·당김·취소된 줄을 찾습니다. 한 주차뿐이면 파일 안 변경 기록을 모읍니다.'),
-        step('#/cummins', 'Cummins EXW', '오더 현황 분석 시트에서 Status·구분으로 거른 줄의 Promise Date를 PO·품번별로 대장 EXW DATE에 넣습니다. 분할 선적 수량 합을 PO·OC 수량과 대조하고 노란 줄(EXW 변경)을 표시합니다.'),
+        step('#/cummins', 'Cummins EXW', '오더 현황 분석 시트에서 오늘 기준 미선적(Undispatched)·구분으로 거른 줄의 Promise Date를 PO·품번별로 대장 EXW DATE에 넣고, 분할 건별 SRM 입력 목록을 만듭니다. 미선적 수량 합을 PO·OC 수량과 대조하고, 노란 칠과 지난주 파일과 달라진 줄을 표시합니다.'),
         step('#/weight', '중량 대조', 'Packing List 자재 합중량과 B/L 중량이 맞는지 확인합니다.'))));
     main.appendChild(h('div', { class: 'card' }, h('h2', null, '1단계에서 하지 않는 것'),
       h('ul', null,

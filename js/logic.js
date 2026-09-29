@@ -943,16 +943,70 @@
         promise: p.date, promiseRaw: p.raw, cancelled: p.cancelled, remarks: str(at('remarks')), so: str(at('so')), om: str(at('om')),
         inv: str(at('inv')), yellow: !!yellow[r + 1] });
     }
-    return { rows: rows, headerRow: hi + 1, error: '' };
+    return { rows: rows, headerRow: hi + 1, error: '', hasInv: col.inv != null };
   }
   function cumKey(po, part) { return str(po).toUpperCase() + '|' + norm(part); }
   function sameWord(a, b) { return str(a).toLowerCase().replace(/\s+/g, '') === str(b).toLowerCase().replace(/\s+/g, ''); }
 
-  // opts: { status: 'Undispatched', gubun: 'HCE', supplierCode: 대장의 이 업체 PO 중 파일에 없는 것을 찾을 때 }
+  // 파일의 Status 수식(실물): =IF(COUNTBLANK(INV#)=1, IF(Promise Date<TODAY(),"Abnormal","Undispatched"), "Dispatched")
+  // 엑셀은 열 때마다 TODAY() 로 다시 계산하지만, 파일 안에 저장된 값은 마지막으로 저장한 날 기준입니다.
+  // 수강생 답(09-29): 「금일 기준으로 선적되었는지 확인하는 파일」 → 기준일(asOf)로 같은 식을 다시 계산합니다.
+  // Promise Date 칸이 비면 엑셀은 0 으로 비교해 Abnormal, 글자(cancelled 등)는 숫자보다 크게 비교돼 Undispatched 입니다.
+  // 수식 대신 손으로 적은 값(실물 분석 시트의 'x' 등)은 사람이 일부러 적은 것이라 그대로 둡니다.
+  var CUM_STATUS_FORMULA = /^(undispatched|abnormal|dispatched)?$/;
+  function cumminsStatusAsOf(r, asOf) {
+    if (!CUM_STATUS_FORMULA.test(str(r.status).toLowerCase())) return str(r.status);
+    if (str(r.inv)) return 'Dispatched';
+    if (r.promise) return r.promise < asOf ? 'Abnormal' : 'Undispatched';
+    return str(r.promiseRaw) ? 'Undispatched' : 'Abnormal';
+  }
+
+  /* 지난주 파일과 비교(수강생 답 09-29: 「전 주 송부받은 파일과 다른 경우에도 노란색」)
+     맞추는 키: Customer PO + Part No. + 1OM# + SO# — 분할 선적은 같은 PO·품번이 SO# 로 나뉘므로 SO# 까지 넣어야 줄이 1:1 로 맞습니다.
+       한 주 사이에 SO# 가 새로 붙는 줄이 있어, 남은 줄은 Customer PO + Part No. 의 나온 순서로 한 번 더 맞춥니다(「Promise Date」 화면과 같은 방식).
+     비교하는 칸: Promise Date(= SRM 에 넣는 EXW DATE)와 QTY(그 날짜의 선적 수량). SRM 에 들어가는 값이 이 두 개이기 때문입니다.
+       Status 는 수식이라 날짜만 지나도 바뀌고, Remarks 는 자유 글이라 비교하지 않습니다. 지난주에 없던 줄(분할 추가 등)도 「다름」입니다. */
+  function cumminsWeekDiff(prevRows, curRows) {
+    var byRow = {}, used = {}, usedCur = {};
+    var k1 = function (r) { return cumKey(r.po, r.part) + '|' + str(r.om) + '|' + str(r.so); };
+    var k2 = function (r) { return cumKey(r.po, r.part); };
+    var pairs = [];
+    [k1, k2].forEach(function (kf) {
+      var idx = {};
+      prevRows.forEach(function (r, i) { if (!used[i]) (idx[kf(r)] = idx[kf(r)] || []).push(i); });
+      curRows.forEach(function (r, j) {
+        if (usedCur[j]) return;
+        var list = idx[kf(r)];
+        if (list && list.length) { var i = list.shift(); used[i] = usedCur[j] = true; pairs.push([prevRows[i], r]); }
+      });
+    });
+    function pd(r) { return r.promise || (r.cancelled ? 'cancelled' : str(r.promiseRaw)); }
+    var changed = 0, added = 0;
+    pairs.forEach(function (pr) {
+      var o = pr[0], n = pr[1], ch = [];
+      if (pd(o) !== pd(n)) ch.push({ field: 'Promise Date', old: pd(o) || '(비어 있음)', new: pd(n) || '(비어 있음)' });
+      if ((o.qty || 0) !== (n.qty || 0)) ch.push({ field: 'QTY', old: o.qty == null ? '' : o.qty, new: n.qty == null ? '' : n.qty });
+      if (ch.length) { byRow[n.rowNo] = { added: false, changes: ch, prevRow: o.rowNo }; changed++; }
+    });
+    curRows.forEach(function (r, j) { if (!usedCur[j]) { byRow[r.rowNo] = { added: true, changes: [] }; added++; } });
+    var removed = prevRows.filter(function (r, i) { return !used[i]; });
+    return { byRow: byRow, removed: removed, counts: { prev: prevRows.length, cur: curRows.length, same: pairs.length - changed, changed: changed, added: added, removed: removed.length } };
+  }
+  function weekNoteText(w) {
+    if (!w) return '';
+    if (w.added) return '지난주 파일에 없던 줄';
+    return w.changes.map(function (c) { return c.field + ' ' + c.old + ' → ' + c.new; }).join(', ');
+  }
+
+  // opts: { status: 'Undispatched', gubun: 'HCE', supplierCode: 대장의 이 업체 PO 중 파일에 없는 것을 찾을 때,
+  //         asOf: 'YYYY-MM-DD' 이면 Status 를 그 날 기준으로 다시 계산, weekDiff: cumminsWeekDiff 결과 }
+  // 수량 대조는 거른 줄(미선적 Undispatched)의 합으로만 합니다(수강생 답 09-29). 거른 밖 줄(출고·Abnormal)의 수량은 참고로만 둡니다.
   function cumminsExwPlan(rows, pos, opts) {
     opts = opts || {};
+    var week = (opts.weekDiff && opts.weekDiff.byRow) || {};
+    rows.forEach(function (r) { r.statusNow = opts.asOf ? cumminsStatusAsOf(r, opts.asOf) : r.status; r.week = week[r.rowNo] || null; });
     var inGubun = rows.filter(function (r) { return !opts.gubun || sameWord(r.gubun, opts.gubun); });
-    var target = inGubun.filter(function (r) { return !opts.status || sameWord(r.status, opts.status); });
+    var target = inGubun.filter(function (r) { return !opts.status || sameWord(r.statusNow, opts.status); });
     var allByKey = {};
     inGubun.forEach(function (r) { (allByKey[cumKey(r.po, r.part)] = allByKey[cumKey(r.po, r.part)] || []).push(r); });
     var groups = {}, order = [];
@@ -961,15 +1015,20 @@
     order.forEach(function (k) {
       var rs = groups[k];
       var byDate = {};
-      rs.forEach(function (r) { var d = r.promise || (r.cancelled ? 'cancelled' : r.promiseRaw || '(날짜 없음)'); byDate[d] = byDate[d] || { date: d, qty: 0, rows: [], yellow: false }; byDate[d].qty += r.qty || 0; byDate[d].rows.push(r.rowNo); if (r.yellow) byDate[d].yellow = true; });
+      rs.forEach(function (r) {
+        var d = r.promise || (r.cancelled ? 'cancelled' : r.promiseRaw || '(날짜 없음)');
+        byDate[d] = byDate[d] || { date: d, qty: 0, rows: [], yellow: false, week: [] };
+        byDate[d].qty += r.qty || 0; byDate[d].rows.push(r.rowNo);
+        if (r.yellow) byDate[d].yellow = true;
+        if (r.week) byDate[d].week.push(weekNoteText(r.week));
+      });
       var schedule = Object.keys(byDate).sort().map(function (d) { return byDate[d]; });
       var all = allByKey[k] || rs;
       var g = {
         key: k, po: rs[0].po, part: rs[0].part, rows: rs, schedule: schedule,
-        remainQty: rs.reduce(function (a, r) { return a + (r.qty || 0); }, 0),
-        fileQty: all.filter(function (r) { return !r.cancelled; }).reduce(function (a, r) { return a + (r.qty || 0); }, 0),
-        dispatchedQty: all.filter(function (r) { return rs.indexOf(r) < 0 && !r.cancelled; }).reduce(function (a, r) { return a + (r.qty || 0); }, 0),
-        yellow: rs.some(function (r) { return r.yellow; }), badDate: schedule.some(function (x) { return !/^\d{4}-\d{2}-\d{2}$/.test(x.date); })
+        remainQty: rs.filter(function (r) { return !r.cancelled; }).reduce(function (a, r) { return a + (r.qty || 0); }, 0),
+        outsideQty: all.filter(function (r) { return rs.indexOf(r) < 0 && !r.cancelled; }).reduce(function (a, r) { return a + (r.qty || 0); }, 0),
+        yellow: rs.some(function (r) { return r.yellow; }), weekChanged: rs.some(function (r) { return !!r.week; }), badDate: schedule.some(function (x) { return !/^\d{4}-\d{2}-\d{2}$/.test(x.date); })
       };
       var po = pos.filter(function (p) { return str(p.po_no).toUpperCase() === str(g.po).toUpperCase(); })[0];
       if (!po) { g.state = 'no_po'; notInLedger.push(g); return; }
@@ -984,8 +1043,9 @@
       var issues = [];
       if (po.lines && po.lines.length && !line) issues.push('PO 품목에 없는 Part No.');
       if (g.poQty == null && g.ocQty == null) issues.push('대장에 PO 수량 없음(PO 본문·OC 를 먼저 읽어 주십시오)');
-      if (g.poQty != null && g.fileQty !== g.poQty) issues.push('파일 수량 합 ' + g.fileQty + ' ≠ PO 수량 ' + g.poQty + (g.fileQty < g.poQty ? '(부족 ' + (g.poQty - g.fileQty) + ')' : '(초과 ' + (g.fileQty - g.poQty) + ')'));
-      if (g.ocQty != null && g.fileQty !== g.ocQty) issues.push('파일 수량 합 ' + g.fileQty + ' ≠ OC 수량 ' + g.ocQty + (g.fileQty < g.ocQty ? '(부족 ' + (g.ocQty - g.fileQty) + ')' : '(초과 ' + (g.fileQty - g.ocQty) + ')'));
+      var q = g.remainQty;
+      if (g.poQty != null && q !== g.poQty) issues.push('미선적 수량 합 ' + q + ' ≠ PO 수량 ' + g.poQty + (q < g.poQty ? '(부족 ' + (g.poQty - q) + ')' : '(초과 ' + (q - g.poQty) + ')'));
+      if (g.ocQty != null && q !== g.ocQty) issues.push('미선적 수량 합 ' + q + ' ≠ OC 수량 ' + g.ocQty + (q < g.ocQty ? '(부족 ' + (g.ocQty - q) + ')' : '(초과 ' + (q - g.ocQty) + ')'));
       if (g.badDate) issues.push('Promise Date 가 날짜가 아닌 줄');
       g.issues = issues;
       g.state = issues.length ? 'check' : 'match';
@@ -996,7 +1056,7 @@
     if (opts.supplierCode) codes.push(opts.supplierCode);
     else out.forEach(function (g) { if (g.supplier_code && codes.indexOf(g.supplier_code) < 0) codes.push(g.supplier_code); });
     var seen = {}; order.forEach(function (k) { seen[k] = true; });
-    var fileKeysAll = {}; rows.forEach(function (r) { fileKeysAll[cumKey(r.po, r.part)] = r.status; });
+    var fileKeysAll = {}; rows.forEach(function (r) { fileKeysAll[cumKey(r.po, r.part)] = r.statusNow; });
     var missing = [];
     pos.forEach(function (p) {
       if (codes.indexOf(p.supplier_code) < 0 || p.exw_actual) return;
@@ -1009,7 +1069,11 @@
     });
     return { groups: out, notInLedger: notInLedger, ledgerMissing: missing,
       counts: { rows: rows.length, target: target.length, groups: order.length, match: out.filter(function (g) { return g.state === 'match'; }).length,
-        check: out.filter(function (g) { return g.state === 'check'; }).length, yellow: target.filter(function (r) { return r.yellow; }).length } };
+        check: out.filter(function (g) { return g.state === 'check'; }).length, yellow: target.filter(function (r) { return r.yellow; }).length,
+        weekChanged: target.filter(function (r) { return !!r.week; }).length,
+        marked: target.filter(function (r) { return r.yellow || !!r.week; }).length,
+        restatus: opts.asOf ? inGubun.filter(function (r) { return !sameWord(r.statusNow, r.status); }).length : 0 },
+      target: target };
   }
 
   // 고른 묶음을 대장에 넣습니다: po.exw_plan[Part No.] = [{date, qty}], 약속 EXW DATE = 그 PO 의 가장 이른 날
@@ -1032,6 +1096,18 @@
       changes.push({ po_no: p.po_no, part: g.part, before_exw: before, after_exw: p.exw_promised, before: g.before, after: g.after, yellow: g.yellow, state: g.state });
     });
     return { pos: res, changes: changes };
+  }
+  // SRM EXW DATE 입력 목록 — 분할 선적은 건별로 한 줄씩(수강생 답 09-29: 「분할 선적일 때 EXW DATE에 건별로 넣음」)
+  function exwEntries(groups) {
+    var out = [];
+    groups.forEach(function (g) {
+      var sch = g.schedule.filter(function (x) { return /^\d{4}-\d{2}-\d{2}$/.test(x.date); });
+      sch.forEach(function (x, i) {
+        out.push({ po: g.po, part: g.part, seq: (i + 1) + '/' + sch.length, date: x.date, qty: x.qty, rows: x.rows.join(','),
+          inLedger: g.state !== 'no_po', yellow: !!x.yellow, week: x.week.filter(Boolean).join('; ') });
+      });
+    });
+    return out;
   }
   function exwPlanText(p) {
     if (!p.exw_plan) return '';
@@ -1514,7 +1590,8 @@
     parsePromiseCell: parsePromiseCell, weeklyInFileChanges: weeklyInFileChanges, DIR_LABEL: DIR_LABEL,
     VOYAGE_STEPS: VOYAGE_STEPS, voyageStepDone: voyageStepDone, voyageProgress: voyageProgress, DEFAULT_SUPPLIER_CHECKLIST: DEFAULT_SUPPLIER_CHECKLIST,
     isOcAttachment: isOcAttachment, parseOcFileName: parseOcFileName, parseOcGrid: parseOcGrid, compareOcToPo: compareOcToPo,
-    parseTsv: parseTsv, cumminsRows: cumminsRows, cumminsExwPlan: cumminsExwPlan, applyCumminsExw: applyCumminsExw, exwPlanText: exwPlanText, LB_TO_KG: LB_TO_KG, bytesToBinary: bytesToBinary,
+    parseTsv: parseTsv, cumminsRows: cumminsRows, cumminsExwPlan: cumminsExwPlan, applyCumminsExw: applyCumminsExw,
+    cumminsStatusAsOf: cumminsStatusAsOf, cumminsWeekDiff: cumminsWeekDiff, weekNoteText: weekNoteText, exwEntries: exwEntries, exwPlanText: exwPlanText, LB_TO_KG: LB_TO_KG, bytesToBinary: bytesToBinary,
     crc32: crc32, makeZip: makeZip, makeSimplePdf: makeSimplePdf, ledgerRows: ledgerRows, pct: pct, num1: num1
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

@@ -76,3 +76,9 @@ console.log(fs.readdirSync(OUT).join('\n'));
   ];
   fs.writeFileSync(path.join(OUT, '예시데이터_Integrated_Order_Status_wk38_분석.xlsx'), L.makeZip(files.map(([name, text]) => ({ name, text }))));
 }
+// 지난주(wk37) 분석 시트 예시 — 「Cummins EXW」 화면의 「지난주 파일 선택」으로 이번 주와 비교합니다(칠 없음)
+{
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(S.cumPrevGrid().grid), 'wk37 분석(예시)');
+  fs.writeFileSync(path.join(OUT, '예시데이터_Integrated_Order_Status_wk37_분석.xlsx'), XLSX.write(wb, { bookType: 'xlsx', type: 'buffer' }));
+}
