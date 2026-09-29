@@ -4,12 +4,14 @@
   var L = root.OMLogic, S = root.OMSample, App = root.OM, h = App.h;
 
   /* ── PDF 본문 읽기(pdf.js, 브라우저 안에서만) ─────────────────────────────── */
-  App.pdfText = function (b) { return pdfText(b); };   // 도착 통지(A/N) 화면의 PDF 첨부 읽기에도 씀
-  function pdfText(bytes) {
+  App.pdfText = function (b) { return pdfText(b); };
+  App.pdfPages = function (b, max) { return pdfPages(b, max || 30); };   // 도착 통지(A/N): B/L 사본은 쪽마다 한 건이라 쪽을 나눠 받음
+  function pdfText(bytes) { return pdfPages(bytes, 5).then(function (p) { return p.join('\n'); }); }
+  function pdfPages(bytes, max) {
     if (!root.pdfjsLib) return Promise.reject(new Error('PDF 라이브러리를 불러오지 못했습니다'));
     var task = root.pdfjsLib.getDocument({ data: bytes.slice(0), cMapUrl: 'vendor/cmaps/', cMapPacked: true, isEvalSupported: false });
     return task.promise.then(function (doc) {
-      var n = Math.min(doc.numPages, 5), jobs = [];
+      var n = Math.min(doc.numPages, max), jobs = [];
       for (var i = 1; i <= n; i++) jobs.push(doc.getPage(i).then(function (pg) { return pg.getTextContent(); }).then(function (tc) {
         var out = '', lastY = null;
         tc.items.forEach(function (it) {
@@ -19,7 +21,7 @@
         });
         return out;
       }));
-      return Promise.all(jobs).then(function (p) { doc.destroy(); return p.join('\n'); });
+      return Promise.all(jobs).then(function (p) { doc.destroy(); return p; });
     });
   }
 

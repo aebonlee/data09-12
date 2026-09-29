@@ -427,7 +427,8 @@
         App.field('PO 번호 정규식(비우면 기본 규칙)', inp('po_regex'), '괄호로 묶은 부분이 있으면 그 부분을 PO 번호로 씁니다. 예: 45\\d{8}'),
         App.field('시험 문장', rxTest),
         h('div', { class: 'span-all' }, h('div', { class: 'btn-row' }, h('button', { type: 'button', class: 'btn', onclick: testRx }, '규칙 시험')), rxOut),
-        h('div', { class: 'span-all' }, App.field('OC 회신 판단 낱말(쉼표로 구분)', inp('oc_keywords'), '대문자 2~3자 낱말(OC 등)은 대소문자를 구분합니다.')))));
+        h('div', { class: 'span-all' }, App.field('OC 회신 판단 낱말(쉼표로 구분)', inp('oc_keywords'), '대문자 2~3자 낱말(OC 등)은 대소문자를 구분합니다.')),
+        h('div', { class: 'span-all' }, App.field('A/N 의 TMS NO 칸 이름(쉼표로 구분)', inp('an_tms_labels'), '도착 통지 표의 머리글이나 「라벨 : 값」의 라벨이 이 이름이면 TMS NO 로 읽습니다. 받은 실물에는 TMS NO 칸이 없었습니다 — 신청번호가 TMS NO 라면 「신청번호」를 적어 주십시오.')))));
     main.appendChild(h('div', { class: 'btn-row', style: 'margin-bottom:20px' }, h('button', { type: 'button', class: 'btn btn-primary', onclick: function () {
       Object.keys(f).forEach(function (k) { st[k] = f[k].type === 'number' ? Math.max(0, Number(f[k].value) || 0) : f[k].value.trim(); });
       App.save(); App.toast('설정을 저장했습니다.');

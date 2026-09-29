@@ -21,6 +21,7 @@
       transit_eu: 90,
       transit_jpcn: 15,
       transit_in: 45,
+      an_tms_labels: 'TMS NO, TMS No., TMS 번호, TMS',   // A/N 에서 TMS NO 를 찾을 칸·라벨 이름(실물 3개에 없어 확인 중 — 신청번호와 같다면 「신청번호」)
       sender_name: '',
       sender_email: '',
       sender_company: '',
@@ -1259,7 +1260,7 @@
     }
     var cs = (/charset\s*=\s*"?([^";\s]+)/i.exec(ct) || [])[1] || 'utf-8';
     var text = bytes ? fromUtf8(bytes, cs) : part.body;
-    if (/text\/html/i.test(ct)) { if (out.html == null) out.html = htmlToText(text); }
+    if (/text\/html/i.test(ct)) { if (out.html == null) { out.html = htmlToText(text); out.htmlRaw = text; } }
     else if (out.plain == null) out.plain = text;
   }
   function addrOf(v) {
@@ -1291,7 +1292,8 @@
     var from = hv('from');
     return {
       from: from, fromAddr: addrOf(from), to: hv('to'), cc: hv('cc'), subject: hv('subject'),
-      date: date, dateTime: dateTime, body: out.plain != null ? out.plain : (out.html || ''), attachments: out.attachments
+      date: date, dateTime: dateTime, body: out.plain != null ? out.plain : (out.html || ''), attachments: out.attachments,
+      html: out.htmlRaw || ''   // HTML 원본 — A/N 본문 표(칸이 여러 줄인 표)를 행·칸 그대로 읽을 때 씀
     };
   }
 
@@ -1538,17 +1540,31 @@
     return out;
   }
 
-  /* ── 예시용 단순 PDF 만들기(영문 텍스트 한 쪽) ─────────────────────────────── */
+  /* ── 예시용 단순 PDF 만들기(영문 텍스트) ─────────────────────────────── */
+  // lines: 글 줄 배열(한 쪽) 또는 쪽마다 줄 배열의 배열(여러 쪽 — A/N B/L 사본 예시)
   function makeSimplePdf(lines) {
     function esc(s) { return String(s).replace(/[\\()]/g, '\\$&').replace(/[^\x20-\x7e]/g, '?'); }
-    var content = 'BT /F1 12 Tf 60 780 Td 16 TL\n' + lines.map(function (l) { return '(' + esc(l) + ') Tj T*'; }).join('\n') + '\nET';
-    var objs = [
-      '<< /Type /Catalog /Pages 2 0 R >>',
-      '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
-      '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
-      '<< /Length ' + content.length + ' >>\nstream\n' + content + '\nendstream'
-    ];
+    var objs;
+    if (!Array.isArray(lines[0])) {   // 한 쪽: 예전과 같은 객체 순서(예시 파일이 바뀌지 않게)
+      var c1 = 'BT /F1 12 Tf 60 780 Td 16 TL\n' + lines.map(function (l) { return '(' + esc(l) + ') Tj T*'; }).join('\n') + '\nET';
+      objs = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+        '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>', '<< /Length ' + c1.length + ' >>\nstream\n' + c1 + '\nendstream'];
+      return pdfBytes(objs);
+    }
+    var pages = lines, n = pages.length, kids = [];
+    objs = ['<< /Type /Catalog /Pages 2 0 R >>', '', '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];
+    pages.forEach(function (pl) {
+      var content = 'BT /F1 12 Tf 60 780 Td 16 TL\n' + pl.map(function (l) { return '(' + esc(l) + ') Tj T*'; }).join('\n') + '\nET';
+      var pi = objs.length + 1;
+      kids.push(pi + ' 0 R');
+      objs.push('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents ' + (pi + 1) + ' 0 R >>');
+      objs.push('<< /Length ' + content.length + ' >>\nstream\n' + content + '\nendstream');
+    });
+    objs[1] = '<< /Type /Pages /Kids [' + kids.join(' ') + '] /Count ' + n + ' >>';
+    return pdfBytes(objs);
+  }
+  function pdfBytes(objs) {
     var out = '%PDF-1.4\n', offs = [];
     objs.forEach(function (o, i) { offs.push(out.length); out += (i + 1) + ' 0 obj\n' + o + '\nendobj\n'; });
     var xref = out.length;
@@ -1562,10 +1578,14 @@
   // 포워더마다 A/N 양식이 달라 한 가지 틀로 읽을 수 없습니다. 흔한 영문·국문 라벨을 넓게 잡고
   // 「라벨 : 값」 줄, 한 줄에 여러 칸(탭·3칸 이상 띄움), 라벨 다음 줄의 값, HTML 표를 모두 읽습니다.
   // 읽은 값마다 근거가 된 원문 줄을 남겨 사람이 확인하고 고칩니다(실물 A/N 을 받기 전이라 규칙은 가정).
+  // 2026-09-29 밤: 실물 A/N(해상 본문 표·엑셀·B/L PDF, 항공 메일)에 맞춰 TMS NO·신청번호·SHIPPER·Incoterms·Local AR·화물형태·운송 구분을 더함.
+  // B/L 은 House 를 먼저(bl), 없으면 Master 를 bl 로 씁니다 — 항차등록 여부를 이 번호 하나로 관리합니다.
   var AN_FIELDS = [
-    { key: 'bl', label: 'B/L 번호' },
-    { key: 'mbl', label: 'Master B/L' },
-    { key: 'vessel', label: '선명(Vessel)' },
+    { key: 'bl', label: 'HBL(B/L 번호)' },
+    { key: 'mbl', label: 'MBL(Master B/L)' },
+    { key: 'tms', label: 'TMS NO' },
+    { key: 'req_no', label: '신청번호' },
+    { key: 'vessel', label: '선명·편명(Vessel/Flight)' },
     { key: 'voyage', label: '항차(Voyage)' },
     { key: 'etd', label: 'ETD(출항)', date: true },
     { key: 'eta', label: 'ETA(도착)', date: true },
@@ -1575,7 +1595,12 @@
     { key: 'forwarder', label: '포워더' },
     { key: 'pos', label: 'PO 번호' },
     { key: 'packages', label: '포장 수량' },
-    { key: 'weight', label: '중량' }
+    { key: 'weight', label: '중량' },
+    { key: 'shipper', label: 'SHIPPER' },
+    { key: 'incoterms', label: 'Incoterms' },
+    { key: 'local_ar', label: 'Local AR' },
+    { key: 'cargo_type', label: '화물형태' },
+    { key: 'mode', label: '운송 구분(참고)' }
   ];
   // part: 「A / B」 로 묶인 두 칸 라벨에서 몇 번째 값인지. pick: 날짜가 여럿이면 first|last
   var AN_RULES = {
@@ -1595,10 +1620,14 @@
     packages: [{ re: 'No\\.?\\s*of\\s*(?:Pkgs?|Packages)' }, { re: 'Packages?|PKGS?' }, { re: '포장\\s*수량|포장|수량' }],
     weight: [{ re: 'Gross\\s*Weight|G\\.?\\s*\\/?\\s*W(?:T)?\\.?' }, { re: 'Weight' }, { re: '총\\s*중량|중량' }],
     containers: [{ re: 'Container(?:\\s*No\\.?)?|CNTR(?:\\s*No\\.?)?' }, { re: '컨테이너(?:\\s*번호)?' }],
-    pos: [{ re: 'P\\.?\\s?O\\.?\\s*(?:No|Number|#)\\.?' }, { re: 'Order\\s*No\\.?' }, { re: 'Customer\\s*Ref(?:erence)?\\.?|Your\\s*Ref\\.?' }, { re: '발주\\s*번호|오더\\s*번호' }]
+    pos: [{ re: 'P\\.?\\s?O\\.?\\s*(?:No|Number|#|LIST)\\.?' }, { re: 'Order\\s*No\\.?' }, { re: 'Customer\\s*Ref(?:erence)?\\.?|Your\\s*Ref\\.?' }, { re: '발주\\s*번호|오더\\s*번호' }],
+    req_no: [{ re: '신청\\s*번호|신청\\s*NO\\.?' }, { re: 'HIPRO(?:\\s*NO\\.?)?' }],
+    shipper: [{ re: 'Shipper(?:\\s*Name)?' }, { re: '송하인|수출자' }],
+    local_ar: [{ re: 'Local\\s*A\\/?R' }],
+    cargo_type: [{ re: '화물\\s*형태|Cargo\\s*Type' }]
   };
   var AN_DATE_LABEL = { etd: true, eta: true };
-  var TEXT_FIELD = { vessel: true, vesvoy: true, voyage: true, pol: true, pod: true, forwarder: true, containers: true };
+  var TEXT_FIELD = { vessel: true, vesvoy: true, voyage: true, pol: true, pod: true, forwarder: true, containers: true, shipper: true, cargo_type: true, local_ar: true };
 
   // 줄 안의 라벨 뒤 값: 앞은 글자가 아닌 곳에서 시작, 뒤는 글자가 붙지 않아야 라벨입니다(POL ≠ POLAND, G/W ≠ GWANGYANG).
   function labelRegex(src, isDate) {
@@ -1616,7 +1645,7 @@
     var res = [
       /\d{4}\s*[-.\/년]\s*\d{1,2}\s*[-.\/월]\s*\d{1,2}\s*일?/g,
       new RegExp('\\d{1,2}(?:st|nd|rd|th)?[\\s\\-.\\/]*(?:' + AN_MON + ')[a-z]*\\.?[\\s\\-.\\/,]*\\d{4}', 'gi'),
-      new RegExp('(?:' + AN_MON + ')[a-z]*\\.?[\\s\\-]*\\d{1,2}(?:st|nd|rd|th)?,?[\\s\\-]*\\d{4}', 'gi'),
+      new RegExp('(?:' + AN_MON + ')[a-z]*\\.?[\\s\\-]*\\d{1,2}(?:st|nd|rd|th)?[,.]?[\\s\\-]*\\d{4}', 'gi'),   // Oct 24, 2026 · SEP.02.2026(B/L)
       /\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{4}/g
     ];
     var hits = [];
@@ -1625,7 +1654,7 @@
       while ((m = re.exec(s))) {
         var raw = m[0], iso = '', amb = false;
         if (k === 1) { var q = new RegExp('(\\d{1,2})(?:st|nd|rd|th)?[\\s\\-.\\/]*(' + AN_MON + ')[a-z]*\\.?[\\s\\-.\\/,]*(\\d{4})', 'i').exec(raw); iso = q ? ymd(q[3], MONTHS[q[2].toLowerCase()], q[1]) : ''; }
-        else if (k === 2) { var q2 = new RegExp('(' + AN_MON + ')[a-z]*\\.?[\\s\\-]*(\\d{1,2})(?:st|nd|rd|th)?,?[\\s\\-]*(\\d{4})', 'i').exec(raw); iso = q2 ? ymd(q2[3], MONTHS[q2[1].toLowerCase()], q2[2]) : ''; }
+        else if (k === 2) { var q2 = new RegExp('(' + AN_MON + ')[a-z]*\\.?[\\s\\-]*(\\d{1,2})(?:st|nd|rd|th)?[,.]?[\\s\\-]*(\\d{4})', 'i').exec(raw); iso = q2 ? ymd(q2[3], MONTHS[q2[1].toLowerCase()], q2[2]) : ''; }
         else if (k === 3) { var p = raw.split(/[\/.\-]/); amb = +p[0] <= 12 && +p[1] <= 12 && p[0] !== p[1]; iso = toDate(raw, dayFirst); }
         else iso = toDate(raw);
         if (iso) hits.push({ i: m.index, end: m.index + raw.length, iso: iso, raw: raw, ambiguous: amb });
@@ -1648,7 +1677,7 @@
     return Math.round(n * 100) / 100;
   }
   function anKey(v) { return str(v).toUpperCase().replace(/[^A-Z0-9]/g, ''); }
-  function anPoList(v) { return str(v).split(/[\s,;\/]+/).map(function (x) { return x.trim().toUpperCase(); }).filter(Boolean); }
+  function anPoList(v) { return anSplitPos(v); }
 
   // 값 검사: 라벨이 본문 문장 속에 우연히 나와도(「packages will arrive」) 값 모양이 아니면 다음 후보로 넘어갑니다.
   function anValue(key, v, dayFirst) {
@@ -1680,13 +1709,22 @@
         return /[A-Za-z0-9]{3}/.test(v) && v.length <= 80 ? v : null;
       case 'pos':
         return /\d/.test(v) ? v : null;
+      case 'req_no': case 'tms':
+        m = /[A-Z0-9][A-Z0-9\-]{3,24}/.exec(v.toUpperCase());
+        return m && /\d/.test(m[0]) ? m[0] : null;
+      case 'shipper': case 'cargo_type':
+        v = v.replace(/\s+/g, ' ').replace(/[,;\s]+$/, '');
+        return /[A-Za-z가-힣0-9]{2}/.test(v) && v.length <= 80 ? v : null;
+      case 'local_ar':
+        return /\d/.test(v) && v.length <= 40 ? v.replace(/\s+/g, ' ') : null;
     }
     return null;
   }
 
   // 한 가지 칸을 라벨 규칙 순서대로 찾습니다. 같은 규칙은 글 위(제목 → 본문)부터.
-  function anFind(key, lines, dayFirst) {
-    var rules = AN_RULES[key];
+  function anFind(key, lines, dayFirst, rulesOverride) {
+    var rules = rulesOverride || AN_RULES[key];
+    if (!rules || !rules.length) return null;
     for (var r = 0; r < rules.length; r++) {
       var re = labelRegex(rules[r].re, !!AN_DATE_LABEL[key]);
       for (var i = 0; i < lines.length; i++) {
@@ -1717,6 +1755,71 @@
     return null;
   }
 
+  /* ── 실물 A/N 에 맞춘 도움 함수 (2026-09-29 밤) ─────────────────────────────── */
+  // TMS NO 는 받은 실물 3개(해상 엑셀·B/L PDF·항공 메일) 어디에도 칸 이름이 없었습니다. 어느 칸인지 확인될 때까지
+  // 설정 「TMS NO 칸 이름」(쉼표로 여러 개)으로 찾습니다. 신청번호와 같은 값이라면 거기에 「신청번호」를 적으면 됩니다.
+  var AN_TMS_DEFAULT = 'TMS NO, TMS No., TMS 번호, TMS';
+  function anTmsLabels(settings) {
+    var v = settings && settings.an_tms_labels != null ? settings.an_tms_labels : AN_TMS_DEFAULT;
+    return str(v).split(/\s*[,，]\s*/).map(str).filter(Boolean);
+  }
+  function anTmsRules(settings) {
+    return anTmsLabels(settings).map(function (l) { return { re: escRe(l).replace(/\s+/g, '\\s*') }; });
+  }
+  // PO 번호 나누기: 쉼표(전각 「，」 포함)·줄바꿈·공백·세미콜론·빗금. 사내 PO 모양(영문 1자 + 숫자 9자리)이
+  // 구분자 없이 붙어 있으면(O269900002O269900001…) 10자리씩 끊습니다. 설정의 PO 정규식이 있으면 그 규칙으로 끊습니다.
+  var HD_PO_ONE = /^[A-Z]\d{9}$/, HD_PO_RUN = /^(?:[A-Z]\d{9}){2,}$/;
+  function anSplitPos(v, customRegex) {
+    var out = [];
+    str(v).toUpperCase().split(/[\s,，、;；\/|]+/).forEach(function (t) {
+      t = t.replace(/^[^A-Z0-9]+|[^A-Z0-9]+$/g, '');
+      if (!t) return;
+      var parts = [t];
+      if (customRegex) {
+        var hits = [];
+        try { var re = new RegExp(customRegex, 'g'), m, g = 0; while ((m = re.exec(t)) && g++ < 100) { hits.push(m[1] != null ? m[1] : m[0]); if (m.index === re.lastIndex) re.lastIndex++; } } catch (e) { hits = []; }
+        if (hits.length > 1 && hits.join('') === t) parts = hits;
+      }
+      if (parts.length === 1 && HD_PO_RUN.test(t)) parts = t.match(/[A-Z]\d{9}/g);
+      parts.forEach(function (x) { if (/\d/.test(x) && out.indexOf(x) < 0) out.push(x); });
+    });
+    return out;
+  }
+  // 컨테이너 칸 글 → [{ no, type }]. 「EXAU1234560(40DC)」「EXBU1000001 / 200000 / 40HC」 모두
+  var AN_CTYPE = '(?:20|40|45)\\s?\'?\\s?(?:GP|DC|DV|HC|HQ|RF|RH|OT|FR|TK|FT)';
+  function anContainerList(v) {
+    var s = str(v).toUpperCase(), out = [], re = /([A-Z]{3}[UJZ])\s?(\d{6})\s?(\d)(?![0-9])/g, m, hits = [];
+    while ((m = re.exec(s))) hits.push({ no: m[1] + m[2] + m[3], i: m.index, end: re.lastIndex });
+    hits.forEach(function (h, k) {
+      var tail = s.slice(h.end, k + 1 < hits.length ? hits[k + 1].i : h.end + 60);
+      var t = new RegExp(AN_CTYPE).exec(tail);
+      if (!out.some(function (x) { return x.no === h.no; })) out.push({ no: h.no, type: t ? t[0].replace(/[\s']/g, '') : '' });
+    });
+    return out;
+  }
+  function anContainerText(list) { return list.map(function (c) { return c.no + (c.type ? '(' + c.type + ')' : ''); }).join(', '); }
+  // Local AR 「USD : 987.65」 → { ccy: 'USD', amount: 987.65 }. 못 읽으면 null(원문은 그대로 둠)
+  function anMoney(v) {
+    var m = /([A-Z]{3})\s*[:：]?\s*(-?[\d,]+(?:\.\d+)?)/.exec(str(v).toUpperCase());
+    if (!m) { var n = /^-?[\d,]+(?:\.\d+)?$/.exec(str(v)); return n ? { ccy: '', amount: Number(n[0].replace(/,/g, '')) } : null; }
+    return { ccy: m[1], amount: Number(m[2].replace(/,/g, '')) };
+  }
+  var AN_INCOTERMS = 'EXW|FCA|FAS|FOB|CFR|CNF|CIF|CPT|CIP|DAP|DPU|DAT|DDP';
+  function anIncoterms(text) {
+    var m = new RegExp('INCO\\s*TERMS?\\s*[:：.]?\\s*(' + AN_INCOTERMS + ')(?![A-Z])', 'i').exec(str(text));   // 「INCOTERMSEXW」처럼 붙어도
+    return m ? { value: m[1].toUpperCase(), src: m[0] } : null;
+  }
+  // 운송 구분은 참고용입니다(학생 답: 해상·항공을 꼭 나눌 필요 없음). 제목의 「_해상」「_항공」 → 글 속 AWB/B/L 순서로 짐작
+  function anMode(subject, text) {
+    var s = str(subject);
+    if (/항공|\bAIR\b/i.test(s)) return '항공';
+    if (/해상|\bOCEAN\b|\bSEA\b/i.test(s)) return '해상';
+    var t = str(text);
+    if (/\b(?:M|H)AWB\b|AIR\s*WAYBILL/i.test(t)) return '항공';
+    if (/\b(?:M|H)\.?B\/?L\b|BILL\s+OF\s+LADING|VESSEL|컨테이너|CONTAINER/i.test(t)) return '해상';
+    return '';
+  }
+
   // mail: { subject, body, from, fromAddr, date, dateTime } (parseEml 결과) · db: 대장(PO 번호 찾기) · opts: { file, dayFirst, today, now }
   function parseArrivalNotice(mail, db, opts) {
     opts = opts || {};
@@ -1735,7 +1838,8 @@
       src[k] = r.src;
     });
     if (f.bl && f.mbl && f.bl === f.mbl) delete f.mbl;
-    if (!f.bl && f.mbl) { f.bl = f.mbl; src.bl = src.mbl; delete f.mbl; delete src.mbl; }   // B/L 이 하나뿐이면 그 번호를 씀
+    var blIsMaster = false;
+    if (!f.bl && f.mbl) { f.bl = f.mbl; src.bl = src.mbl; delete f.mbl; delete src.mbl; blIsMaster = true; }   // B/L 이 하나뿐이면 그 번호를 씀
     // 선명·항차: 「선명 / 항차」 한 칸 → 따로 적힌 칸 순서
     var vv = anFind('vesvoy', lines, dayFirst);
     if (vv) {
@@ -1771,7 +1875,7 @@
     });
     poNumbersIn(text, db && db.settings ? db.settings.po_regex : '').list.forEach(addPo);
     var rp = anFind('pos', lines, dayFirst);
-    if (rp) anPoList(cutCell(rp.value)).filter(function (x) { return /\d/.test(x) && x.length >= 5; }).forEach(addPo);
+    if (rp) anSplitPos(rp.value, db && db.settings ? db.settings.po_regex : '').filter(function (x) { return /\d/.test(x) && x.length >= 5; }).forEach(addPo);
     if (found.length) {
       f.pos = found.join(', ');
       lines.forEach(function (l) { if (poSrc.length < 3 && found.some(function (no) { return l.toUpperCase().indexOf(no) >= 0; })) poSrc.push(l.trim().slice(0, 120)); });
@@ -1784,6 +1888,16 @@
       f.forwarder = name && !/@/.test(name) ? name : dom;
       if (f.forwarder) src.forwarder = 'From: ' + str(mail.from);
     }
+    // 2026-09-29 밤 추가 칸: 신청번호 · SHIPPER · Local AR · 화물형태 · TMS NO(라벨은 설정) · Incoterms · 운송 구분
+    ['req_no', 'shipper', 'local_ar', 'cargo_type'].forEach(function (k) {
+      var r = anFind(k, lines, dayFirst);
+      if (r) { f[k] = r.value; src[k] = r.src; }
+    });
+    var rt = anFind('tms', lines, dayFirst, anTmsRules(db && db.settings));
+    if (rt) { f.tms = rt.value; src.tms = rt.src; }
+    var ic = anIncoterms(text);
+    if (ic) { f.incoterms = ic.value; src.incoterms = ic.src; }
+    f.mode = anMode(str(mail.subject), text);
     var fields = {};
     AN_FIELDS.forEach(function (x) { fields[x.key] = f[x.key] || ''; });
     var now = opts.now || new Date().toISOString();
@@ -1791,7 +1905,7 @@
       id: 'an' + (hashCode(str(mail.from) + '|' + str(mail.subject) + '|' + str(mail.dateTime) + '|' + str(mail.body).slice(0, 4000)) >>> 0).toString(36),
       file: str(opts.file), received: mail.date || opts.today || '', receivedAt: mail.dateTime || now,
       from: str(mail.from), subject: str(mail.subject), fields: fields, parsed: Object.assign({}, fields), src: src, notes: notes,
-      text: str(mail.body).slice(0, 8000)
+      text: str(mail.body).slice(0, 8000), blIsMaster: blIsMaster
     };
   }
 
@@ -1802,36 +1916,346 @@
     return { from: '', fromAddr: '', subject: '', date: '', dateTime: '', body: text, attachments: [] };
   }
 
-  // 같은 B/L(House 또는 Master 번호가 겹치면 같은 건)의 A/N 을 묶어, 받은 순서대로 ETA 변경을 찾습니다.
+  /* ── 실물 A/N 양식 읽기 (2026-09-29 밤, 김세이 님이 보낸 실물 3개 기준) ─────────────────────────────── */
+  // ① 해상 「도착일정통지」 메일 본문의 HTML 표 — 한 줄 = 신청번호 한 건. PO LIST 칸에 PO 여러 개, 컨테이너가 여럿이면
+  //    화물형태·컨테이너번호·CONTAINER TYPE 이 줄을 바꿔 되풀이(다른 칸은 rowspan 으로 묶이거나 같은 값이 반복)
+  // ② 같은 내용의 엑셀 첨부(.xls) — 머리글 31칸, 컨테이너마다 한 줄(같은 신청번호가 여러 줄)
+  // ③ House B/L 사본 PDF — 칸 이름이 배경 그림이라 글에는 값만 있음. B/L 번호가 쪽 위·아래에 두 번, 컨테이너가 많으면 「ATTACHED RIDER」 쪽
+  // ④ 항공 「도착일정통지」 메일(ks_c_5601-1987) — 본문 표 한 줄 = HAWB 한 건, 첨부 HAWB PDF 에 「HIPRO: 신청번호」「PO:」
+  // 표 머리글은 공백·기호를 뺀 대문자로 비교합니다. 앞에 적은 이름이 우선입니다.
+  var AN_COLS = [
+    ['req_no', ['신청번호', '신청NO', 'HIPRO', 'HIPRONO']],
+    ['pos', ['POLIST', 'PONO', 'PO', 'PO번호', 'PONUMBER', '발주번호', 'CONTRACTNO', 'ORDERNO']],
+    ['incoterms', ['INCOTERMS', 'INCOTERM', '인코텀즈', '인도조건']],
+    ['local_ar', ['LOCALAR']],
+    ['pol', ['적재항', 'DEPAPOL', 'POL', 'DEPA', '선적항', 'PORTOFLOADING', 'LOADINGPORT']],
+    ['pod', ['도착항', 'DESTPOD', 'POD', 'DEST', '양하항', 'PORTOFDISCHARGE']],
+    ['vessel', ['편명', 'FLT', 'FLIGHT', 'FLIGHTNO', 'VESSEL', 'VESSELNAME', '선명', '모선', '모선명']],
+    ['voyage', ['항차', 'VOYAGE', 'VOY', 'VOYNO']],
+    ['shipper', ['SHIPPER', 'SHIPPERNAME', '송하인']],
+    ['mbl', ['MBLNO', 'MBL', 'MAWBNO', 'MAWB', 'MASTERBL', 'MASTERBLNO']],
+    ['bl', ['HBLNO', 'HBL', 'HAWBNO', 'HAWB', 'HOUSEBL', 'HOUSEBLNO', 'BLNO', 'BL', 'BL번호']],
+    ['cargo_type', ['화물형태', 'CARGOTYPE', '화물구분']],
+    ['eta', ['입항일', 'ETA', '입항예정일', '도착예정일', '도착일', 'ARRIVALDATE']],
+    ['eta_time', ['TIME', 'ETATIME', '도착시각']],
+    ['etd', ['ETD', '출항일', '선적일', 'ONBOARDDATE']],
+    ['cntr', ['컨테이너번호', 'CONTAINERNO', 'CONTAINER', 'CNTRNO', '컨테이너']],
+    ['ctype', ['CONTAINERTYPE', 'CNTRTYPE', '컨테이너타입']],
+    ['packages', ['수량', 'CNT', 'PKGS', '포장수량', 'NOOFPKGS', 'PACKAGES']],
+    ['pkg_unit', ['수량단위']],
+    ['weight', ['중량', 'WT', 'GW', 'GROSSWEIGHT', '총중량']],
+    ['forwarder', ['포워더', 'FORWARDER']]
+  ];
+  function colKey(v) { return str(v).toUpperCase().replace(/[^A-Z0-9가-힣]/g, ''); }
+  // 머리글 한 줄 → { 칸: 열 번호 }. TMS NO 는 설정의 칸 이름으로(다른 칸과 같은 열을 가리켜도 됨)
+  function anHeaderMap(row, settings) {
+    var keys = row.map(colKey), used = {}, map = {}, n = 0;
+    AN_COLS.forEach(function (c) {
+      for (var a = 0; a < c[1].length; a++) {
+        var j = keys.indexOf(c[1][a]);
+        if (j >= 0 && !used[j]) { map[c[0]] = j; used[j] = true; n++; return; }
+      }
+    });
+    var tl = anTmsLabels(settings).map(colKey);
+    for (var t = 0; t < tl.length; t++) { var j = keys.indexOf(tl[t]); if (j >= 0) { map.tms = j; break; } }
+    var key = map.bl != null || map.mbl != null || map.req_no != null;
+    return n >= 3 && key ? map : null;
+  }
+  // HTML → 표마다 행 × 칸 글자. 안쪽 표부터 꺼내고, rowspan 은 아래 줄에 같은 값을 채웁니다(colspan 은 첫 칸에만).
+  function anHtmlDecode(s) {
+    return s.replace(/&nbsp;/gi, ' ').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&quot;/gi, '"').replace(/&#39;|&apos;/gi, "'")
+      .replace(/&#(\d+);/g, function (a, n) { return String.fromCharCode(+n); }).replace(/&#x([0-9a-f]+);/gi, function (a, n) { return String.fromCharCode(parseInt(n, 16)); }).replace(/&amp;/gi, '&');
+  }
+  function anCellText(html) {
+    return anHtmlDecode(html.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li)>/gi, '\n').replace(/<[^>]+>/g, ''))
+      .split('\n').map(function (l) { return l.replace(/[ \t 　]+/g, ' ').trim(); }).filter(Boolean).join('\n');
+  }
+  function anHtmlTables(html) {
+    html = str(html).replace(/<!--[\s\S]*?-->/g, '').replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<script[\s\S]*?<\/script>/gi, '');
+    var out = [], re = /<table\b[^>]*>((?:(?!<table\b)[\s\S])*?)<\/table>/i, m, guard = 0;
+    while ((m = re.exec(html)) && guard++ < 300) {
+      out.push(anTableGrid(m[1]));
+      html = html.slice(0, m.index) + '\n' + html.slice(m.index + m[0].length);
+    }
+    return out;
+  }
+  function anTableGrid(inner) {
+    var grid = [], pending = [], tr, tre = /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi;
+    while ((tr = tre.exec(inner))) {
+      var row = [], c = 0, cm, cre = /<t([dh])\b([^>]*)>([\s\S]*?)<\/t[dh]>/gi;
+      var fill = function () { while (pending[c] && pending[c].n > 0) { row[c] = pending[c].v; pending[c].n--; c++; } };
+      while ((cm = cre.exec(tr[1]))) {
+        fill();
+        var rs = +((/rowspan\s*=\s*["']?(\d+)/i.exec(cm[2]) || [])[1] || 1), cs = +((/colspan\s*=\s*["']?(\d+)/i.exec(cm[2]) || [])[1] || 1);
+        var v = anCellText(cm[3]);
+        for (var k = 0; k < cs; k++) { row[c] = k ? '' : v; if (rs > 1) pending[c] = { n: rs - 1, v: k ? '' : v }; c++; }
+      }
+      fill();
+      for (var j = c; j < pending.length; j++) if (pending[j] && pending[j].n > 0) { row[j] = pending[j].v; pending[j].n--; }
+      for (var i = 0; i < row.length; i++) if (row[i] == null) row[i] = '';
+      grid.push(row);
+    }
+    return grid;
+  }
+  // 붙여넣은 글의 탭 표(Outlook·엑셀에서 복사): 탭이 2개 이상인 줄이 이어진 덩어리 하나 = 표 하나
+  function anTextGrids(text) {
+    var out = [], cur = null;
+    str(text).split(/\r?\n/).forEach(function (l) {
+      if ((l.match(/\t/g) || []).length >= 2) { if (!cur) out.push(cur = []); cur.push(l.split('\t').map(str)); }
+      else cur = null;
+    });
+    return out;
+  }
+  function anRowKey(f) { return [colKey(f.req_no), anKey(f.bl), anKey(f.mbl)].join('|'); }
+  // 표(행 × 칸) → 부분 기록 [{ f, src, cntrs, pos, cargo, notes, key, mode }]. 같은 신청번호·B/L 줄은 한 건으로 합칩니다.
+  function anRecordsFromGrid(grid, srcName, settings) {
+    grid = (grid || []).map(function (r) { return (r || []).map(function (v) { return v == null ? '' : v; }); });
+    var hi = -1, map = null;
+    for (var i = 0; i < Math.min(grid.length, 15); i++) { map = anHeaderMap(grid[i], settings); if (map) { hi = i; break; } }
+    if (!map) return [];
+    var head = grid[hi], recs = [], last = null, customRe = settings && settings.po_regex;
+    var air = ['MAWBNO', 'MAWB', 'HAWBNO', 'HAWB', 'FLT', 'FLIGHT'].some(function (k) { return head.map(colKey).indexOf(k) >= 0; });
+    for (var r = hi + 1; r < grid.length; r++) {
+      var row = grid[r];
+      if (!row.some(function (v) { return str(v); })) continue;
+      var cell = function (k) { return map[k] == null ? '' : row[map[k]]; };
+      var part = { f: {}, src: {} };
+      Object.keys(map).forEach(function (k) {
+        if (k === 'cntr' || k === 'ctype' || k === 'eta_time' || k === 'pkg_unit') return;
+        var v = cell(k);
+        if (v === '' || v == null) return;
+        var raw = typeof v === 'number' ? String(v) : str(v);
+        if (k === 'eta' || k === 'etd') { var d = toDate(typeof v === 'number' ? v : raw) || ((datesIn(raw)[0] || {}).iso || ''); if (!d) return; part.f[k] = d; }
+        else if (k === 'bl' || k === 'mbl' || k === 'req_no' || k === 'tms') part.f[k] = raw.replace(/\s+/g, '').toUpperCase();
+        else part.f[k] = raw;
+        part.src[k] = srcName + ' ' + (r + 1) + '행 「' + str(head[map[k]]) + '」 ' + raw.replace(/\n/g, ' ⏎ ').slice(0, 140) +
+          (k === 'eta' && map.eta_time != null && str(cell('eta_time')) ? ' ' + str(cell('eta_time')) : '');
+      });
+      if (part.f.packages && map.pkg_unit != null && str(cell('pkg_unit'))) part.f.packages += ' ' + str(cell('pkg_unit'));
+      // 컨테이너: 번호 칸과 형식 칸을 순서대로 짝지음. 머리글보다 긴 줄(F40 / 번호 / 40DC 되풀이)은 뒤 칸도 훑음
+      var extra = row.slice(head.length).map(str).join(' ');
+      var nos = anContainerList(str(cell('cntr')) + ' ' + extra).map(function (c) { return c.no; });
+      var types = (str(cell('ctype')) + ' ' + extra).toUpperCase().match(new RegExp(AN_CTYPE, 'g')) || [];
+      var cntrs = nos.map(function (no, k) { return { no: no, type: (types[k] || types[types.length - 1] || '').replace(/[\s']/g, '') }; });
+      var cargo = str(cell('cargo_type')).split(/[\s,\/]+/).filter(Boolean);
+      var poList = anSplitPos(cell('pos'), customRe);
+      var key = anRowKey(part.f);
+      // 신청번호·B/L 이 모두 빈 줄 = 위 건에 딸린 줄(컨테이너만 적힌 줄)
+      var target = key === '||' ? last : recs.filter(function (x) { return x.key === key; })[0];
+      if (!target && key === '||') continue;
+      if (!target) {
+        target = { key: key, f: {}, src: {}, cntrs: [], pos: [], cargo: [], notes: [], mode: air ? '항공' : '해상', rows: 0 };
+        recs.push(target);
+      }
+      target.rows++;
+      Object.keys(part.f).forEach(function (k) { if (!target.f[k]) { target.f[k] = part.f[k]; target.src[k] = part.src[k]; } });
+      poList.forEach(function (x) { if (target.pos.indexOf(x) < 0) target.pos.push(x); });
+      if (poList.length && !target.src.pos) target.src.pos = part.src.pos;
+      cntrs.forEach(function (c) { if (!target.cntrs.some(function (x) { return x.no === c.no; })) target.cntrs.push(c); });
+      if (cntrs.length) target.src.containers = (target.src.containers ? target.src.containers + ' ⏎ ' : '') + srcName + ' ' + (r + 1) + '행 ' + cntrs.map(function (c) { return c.no + ' ' + c.type; }).join(', ');
+      cargo.forEach(function (x) { if (target.cargo.indexOf(x) < 0) target.cargo.push(x); });
+      last = target;
+    }
+    return recs;
+  }
+  // PDF(B/L·AWB 사본) 쪽 글 → 부분 기록. 칸 이름이 그림이라 모양으로 읽습니다:
+  // B/L 번호 = 「H.B/L:」 같은 라벨 값, 없으면 그 쪽에 두 번 이상 나오는 영문+숫자 번호(PO·컨테이너 모양 제외).
+  // B/L 번호가 없는 쪽(첨부 명세·송장)은 앞 쪽의 건에 붙입니다. 같은 B/L 의 쪽(RIDER)은 합칩니다.
+  function anRecordsFromPages(pages, srcName, db) {
+    var settings = (db && db.settings) || {}, customRe = settings.po_regex || '';
+    var ledgerNos = ((db && db.pos) || []).map(function (p) { return str(p.po_no).toUpperCase(); }).filter(Boolean);
+    var recs = [], last = null;
+    (pages || []).forEach(function (t, pi) {
+      t = str(t);
+      var lines = t.split(/\r?\n/), flat = t.replace(/\s+/g, ' '), up = flat.toUpperCase(), pg = srcName + ' ' + (pi + 1) + '쪽';
+      var cn = anContainerList(flat);
+      var cnNos = cn.map(function (c) { return c.no; });
+      var bl = '', blSrc = '';
+      var lab = anFind('bl', lines, false);
+      if (lab && !HD_PO_ONE.test(lab.value)) { bl = lab.value; blSrc = pg + ' ' + lab.src; }
+      if (!bl) {
+        var cnt = {}, order = [];
+        (up.match(/\b[A-Z]{2,}[A-Z0-9]*\d{4,}[A-Z0-9]*\b/g) || []).forEach(function (x) { if (!cnt[x]) { cnt[x] = 0; order.push(x); } cnt[x]++; });
+        for (var k = 0; k < order.length; k++) {
+          var x = order[k];
+          if (cnt[x] >= 2 && !HD_PO_ONE.test(x) && cnNos.indexOf(x) < 0 && !/^[A-Z]{3}[UJZ]\d{7}$/.test(x) && x.length >= 8 && x.length <= 20) { bl = x; blSrc = pg + ' — 쪽에 ' + cnt[x] + '번 나오는 번호 ' + x; break; }
+        }
+      }
+      var target = null;
+      if (bl) target = recs.filter(function (r) { return r.key === anKey(bl); })[0] || null;
+      else target = last;
+      if (!target && !bl) return;
+      if (!target) { target = { key: anKey(bl), f: { bl: bl }, src: { bl: blSrc }, cntrs: [], pos: [], cargo: [], notes: [], mode: '', rows: 0 }; recs.push(target); }
+      target.rows++;
+      function put(k, v, s) { if (v && !target.f[k]) { target.f[k] = v; target.src[k] = pg + ' ' + s; } }
+      // PO: 사내 PO 모양 · 설정 정규식 · 대장에 있는 번호만(PDF 의 송장·계약 번호가 섞이지 않게)
+      var pos = [];
+      poNumbersIn(t, customRe).list.concat(up.match(/[A-Z]\d{9}(?:[A-Z]\d{9})+/g) || []).forEach(function (x) {
+        anSplitPos(x, customRe).forEach(function (y) { if (pos.indexOf(y) < 0) pos.push(y); });
+      });
+      pos = pos.filter(function (x) { return (HD_PO_ONE.test(x) || customRe || ledgerNos.indexOf(x) >= 0) && x !== anKey(target.f.bl) && cnNos.indexOf(x) < 0; });
+      pos.forEach(function (x) { if (target.pos.indexOf(x) < 0) target.pos.push(x); });
+      if (pos.length && !target.src.pos) target.src.pos = pg + ' ' + (lines.filter(function (l) { return pos.some(function (p) { return l.toUpperCase().indexOf(p) >= 0; }); }).slice(0, 3).map(str).join(' ⏎ ')).slice(0, 160);
+      cn.forEach(function (c) { if (!target.cntrs.some(function (x) { return x.no === c.no; })) target.cntrs.push(c); });
+      if (cn.length && !target.src.containers) target.src.containers = pg + ' ' + anContainerText(cn);
+      var vv = anFind('vesvoy', lines, false);
+      if (vv) {
+        var parts = cutCell(vv.value).split(/\s*\/\s*/);
+        put('vessel', anValue('vessel', parts[0]), vv.src); if (parts[1]) put('voyage', anValue('voyage', parts[1]), vv.src);
+      } else {
+        for (var li = 0; li < lines.length; li++) {
+          var mv = /^\s*([A-Z][A-Z0-9 .\-]{2,40}?)\s{2,}((?:V\.?\s?)?\d{3,4}[A-Z]{0,2})\s*$/.exec(lines[li]);
+          if (mv && /[A-Z]{3}/.test(mv[1])) { put('vessel', mv[1].trim(), '선명·항차로 보이는 줄: ' + lines[li].trim()); put('voyage', mv[2], '선명·항차로 보이는 줄: ' + lines[li].trim()); break; }
+        }
+      }
+      var ob = /ON\s*BOARD/i.exec(flat);
+      if (ob) { var od = datesIn(flat.slice(ob.index, ob.index + 80))[0]; if (od) put('etd', od.iso, 'ON BOARD … ' + od.raw); }
+      var hp = /HIPRO\s*[:：]?\s*([A-Z0-9]{6,20})/i.exec(flat); if (hp) put('req_no', hp[1].toUpperCase(), hp[0]);
+      var rt = anFind('tms', lines, false, anTmsRules(settings)); if (rt) put('tms', rt.value, rt.src);
+      var ic = anIncoterms(flat); if (ic) put('incoterms', ic.value, ic.src);
+      var wm = /(\d[\d,]*(?:\.\d+)?)\s*KGS?\b/i.exec(flat); if (wm) put('weight', wm[0], wm[0]);
+      var pk = /\(\s*(\d[\d,]*)\s*(PACKAGES?|PALLETS?|PKGS?|CTNS?|CASES?|CARTONS?)\s*\)/i.exec(flat); if (pk) put('packages', pk[1] + ' ' + pk[2].toUpperCase(), pk[0]);
+      if (!target.mode) target.mode = /AIR\s*WAYBILL|\bHAWB\b|\bMAWB\b/i.test(flat) ? '항공' : cn.length || /BILL\s+OF\s+LADING|CY\/CY|CONTAINER/i.test(flat) ? '해상' : '';
+      last = target;
+    });
+    return recs;
+  }
+  // 두 부분 기록 합치기: 앞(표)의 값을 두고 빈 칸만 뒤(첨부)에서 채움. 둘 다 있고 다르면 메모
+  var AN_CMP = { incoterms: 'Incoterms', eta: 'ETA', vessel: '선명·편명', req_no: '신청번호' };
+  function anMergePart(a, b, bName) {
+    Object.keys(b.f).forEach(function (k) {
+      if (!a.f[k]) { a.f[k] = b.f[k]; a.src[k] = b.src[k]; }
+      else if (AN_CMP[k] && colKey(a.f[k]) !== colKey(b.f[k])) a.notes.push(AN_CMP[k] + ' 「' + a.f[k] + '」 · ' + bName + ' 「' + b.f[k] + '」 다름 — 확인');
+    });
+    b.pos.forEach(function (x) { if (a.pos.indexOf(x) < 0) a.pos.push(x); });
+    b.cntrs.forEach(function (c) {
+      var ex = a.cntrs.filter(function (x) { return x.no === c.no; })[0];
+      if (!ex) a.cntrs.push(c); else if (!ex.type) ex.type = c.type;
+    });
+    b.cargo.forEach(function (x) { if (a.cargo.indexOf(x) < 0) a.cargo.push(x); });
+    if (!a.mode) a.mode = b.mode;
+    if (!a.src.pos && b.src.pos) a.src.pos = b.src.pos;
+    if (!a.src.containers && b.src.containers) a.src.containers = b.src.containers;
+    return a;
+  }
+  function anPartKeyMatch(a, b) {
+    var ka = [anKey(a.f.bl), anKey(a.f.mbl)].filter(Boolean), kb = [anKey(b.f.bl), anKey(b.f.mbl)].filter(Boolean);
+    if (ka.some(function (k) { return kb.indexOf(k) >= 0; })) return true;
+    return !!(a.f.req_no && b.f.req_no && colKey(a.f.req_no) === colKey(b.f.req_no));
+  }
+
+  // 메일 한 통(또는 엑셀·PDF 파일 하나) → A/N 기록 여러 건(B/L 마다 한 건).
+  // extra: { grids: [{ name, rows }], pdfs: [{ name, pages }] } — 메일 첨부나 따로 올린 엑셀·PDF 를 읽은 것
+  // 표가 있으면 표가 기준, PDF 는 같은 B/L 의 빈 칸(항차·ETD 등)을 채웁니다. 표가 없으면 예전 방식(라벨 읽기)으로 한 건.
+  function anParseAll(mail, db, opts, extra) {
+    opts = opts || {}; extra = extra || {};
+    var settings = (db && db.settings) || {};
+    var tables = [];
+    if (mail.html) anHtmlTables(mail.html).forEach(function (g) { tables.push({ name: '본문 표', rows: g }); });
+    else anTextGrids(mail.body).forEach(function (g) { tables.push({ name: '본문 표', rows: g }); });
+    (extra.grids || []).forEach(function (g) { tables.push(g); });
+    var tab = [];
+    tables.forEach(function (t) {
+      anRecordsFromGrid(t.rows, t.name, settings).forEach(function (p) {
+        var ex = tab.filter(function (x) { return anPartKeyMatch(x, p); })[0];
+        if (ex) anMergePart(ex, p, t.name); else tab.push(p);
+      });
+    });
+    var pdf = [];
+    (extra.pdfs || []).forEach(function (d) { anRecordsFromPages(d.pages, d.name, db).forEach(function (p) { pdf.push({ p: p, name: d.name }); }); });
+    var parts;
+    if (tab.length) {
+      parts = tab;
+      pdf.forEach(function (x) {
+        var ex = parts.filter(function (a) { return anPartKeyMatch(a, x.p); })[0];
+        if (ex) anMergePart(ex, x.p, x.name); else parts.push(x.p);
+      });
+    } else if (pdf.length >= 2) {
+      parts = pdf.map(function (x) { return x.p; });
+    } else {
+      // 예전 방식: 본문(+ PDF 글) 라벨 읽기 한 건. PDF 에서 모양으로 읽은 건이 하나면 빈 칸을 그것으로 채움
+      var pdfText = (extra.pdfs || []).map(function (d) { return '\n[첨부 ' + d.name + ']\n' + (d.pages || []).join('\n'); }).join('\n');
+      var one = parseArrivalNotice(pdfText ? Object.assign({}, mail, { body: str(mail.body) + pdfText }) : mail, db, opts);
+      if (pdf.length === 1) {
+        var p = pdf[0].p;
+        Object.keys(p.f).forEach(function (k) { if (!one.fields[k] && p.f[k]) { one.fields[k] = p.f[k]; one.src[k] = p.src[k]; } });
+        var pl = anSplitPos(one.fields.pos); p.pos.forEach(function (x) { if (pl.indexOf(x) < 0) pl.push(x); }); one.fields.pos = pl.join(', ');
+        if (!one.fields.containers && p.cntrs.length) { one.fields.containers = anContainerText(p.cntrs); one.src.containers = p.src.containers; }
+        one.parsed = Object.assign({}, one.fields);
+      }
+      return [one];
+    }
+    var now = opts.now || new Date().toISOString();
+    var fwd = '', fwdSrc = '';
+    if (mail.from) {
+      var name = str(mail.from).replace(/<[^>]*>/, '').replace(/^["'\s]+|["'\s]+$/g, '');
+      fwd = name && !/@/.test(name) ? name : (mail.fromAddr ? domainOf(mail.fromAddr) : ''); fwdSrc = 'From: ' + str(mail.from);
+    }
+    var mode = anMode(str(mail.subject), '');
+    return parts.map(function (p) {
+      var f = p.f, src = p.src;
+      if (p.pos.length) f.pos = p.pos.join(', ');
+      if (p.cntrs.length) f.containers = anContainerText(p.cntrs);
+      if (p.cargo.length) f.cargo_type = p.cargo.join(', ');
+      if (f.bl && f.mbl && anKey(f.bl) === anKey(f.mbl)) { delete f.mbl; delete src.mbl; }
+      var blIsMaster = false;
+      if (!f.bl && f.mbl) { f.bl = f.mbl; src.bl = src.mbl; delete f.mbl; delete src.mbl; blIsMaster = true; }   // HBL 이 없으면 MBL 로 관리
+      if (!f.forwarder && fwd) { f.forwarder = fwd; src.forwarder = fwdSrc; }
+      f.mode = mode || p.mode || '';
+      var fields = {};
+      AN_FIELDS.forEach(function (x) { fields[x.key] = f[x.key] ? String(f[x.key]) : ''; });
+      var rowKey = anKey(fields.bl) || colKey(fields.req_no) || p.key;
+      return {
+        id: 'an' + (hashCode(str(mail.from) + '|' + str(mail.subject) + '|' + str(mail.dateTime) + '|' + str(opts.file) + '|' + str(mail.body).slice(0, 2000)) >>> 0).toString(36) + '-' + rowKey.toLowerCase(),
+        file: str(opts.file), received: mail.date || opts.today || '', receivedAt: mail.dateTime || now,
+        from: str(mail.from), subject: str(mail.subject), fields: fields, parsed: Object.assign({}, fields), src: src, notes: p.notes,
+        text: str(mail.body).slice(0, 8000), blIsMaster: blIsMaster
+      };
+    });
+  }
+
+  // 같은 B/L 의 A/N 을 묶어, 받은 순서대로 ETA 변경을 찾습니다(2026-09-29 밤: B/L 한 건 = 한 묶음).
+  // 묶음 열쇠 = HBL(없으면 MBL). HBL 이 다르면 MBL 이 같아도(혼재 LCL) 다른 건입니다.
+  // MBL 만 적힌 A/N 으로 만든 묶음에 나중에 HBL + 그 MBL 이 적힌 A/N 이 오면 한 묶음으로 잇고 HBL 로 부릅니다.
   function anGroups(recs) {
     var groups = [];
+    function find(fn) { return groups.filter(fn)[0] || null; }
     (recs || []).forEach(function (r) {
-      var keys = [anKey(r.fields.bl), anKey(r.fields.mbl)].filter(Boolean);
-      var g = keys.length ? groups.filter(function (x) { return keys.some(function (k) { return x.keys.indexOf(k) >= 0; }); })[0] : null;
-      if (!g) { g = { keys: [], recs: [] }; groups.push(g); }
-      keys.forEach(function (k) { if (g.keys.indexOf(k) < 0) g.keys.push(k); });
+      var k = anKey(r.fields.bl), mk = anKey(r.fields.mbl), rq = colKey(r.fields.req_no), g = null;
+      if (k) g = find(function (x) { return x.key === k || x.alias.indexOf(k) >= 0; });
+      if (!g && k && mk) g = find(function (x) { return x.key === mk && x.mblOnly; });
+      if (!g && !k && rq) g = find(function (x) { return x.reqs.indexOf(rq) >= 0; });
+      if (!g) { g = { key: k, alias: [], recs: [], reqs: [], mblOnly: !!r.blIsMaster }; groups.push(g); }
+      else if (k && g.key === k && !r.blIsMaster) g.mblOnly = false;
+      if (k && g.key && g.key !== k) { g.alias.push(g.key); g.key = k; g.mblOnly = false; }
+      else if (k && !g.key) g.key = k;
+      if (rq && g.reqs.indexOf(rq) < 0) g.reqs.push(rq);
       g.recs.push(r);
     });
     groups.forEach(function (g) {
       g.recs = g.recs.map(function (r, i) { return { r: r, i: i }; }).sort(function (a, b) {
         return str(a.r.receivedAt || a.r.received).localeCompare(str(b.r.receivedAt || b.r.received)) || a.i - b.i;
       }).map(function (x) { return x.r; });
-      var merged = {}, changes = [], last = '', pos = [];
+      var merged = {}, changes = [], last = '', pos = [], cntrs = [], mbls = [];
       g.recs.forEach(function (r) {
         AN_FIELDS.forEach(function (x) { if (r.fields[x.key]) merged[x.key] = r.fields[x.key]; });
         anPoList(r.fields.pos).forEach(function (no) { if (pos.indexOf(no) < 0) pos.push(no); });
+        anContainerList(r.fields.containers).forEach(function (c) { var ex = cntrs.filter(function (x) { return x.no === c.no; })[0]; if (!ex) cntrs.push(c); else if (c.type) ex.type = c.type; });
+        if (anKey(r.fields.mbl) && mbls.indexOf(anKey(r.fields.mbl)) < 0) mbls.push(anKey(r.fields.mbl));
         var e = r.fields.eta;
         if (e) { if (last && e !== last) changes.push({ from: last, to: e, at: r.received, file: r.file, id: r.id, days: daysBetween(last, e) }); last = e; }
       });
       merged.pos = pos.join(', ');
-      g.merged = merged; g.poList = pos; g.etaChanges = changes;
-      g.bl = merged.bl || merged.mbl || '';
+      if (cntrs.length) merged.containers = anContainerText(cntrs);
+      g.merged = merged; g.poList = pos; g.containers = cntrs; g.etaChanges = changes;
+      g.bl = g.key ? (merged.bl || '') : '';
+      g.keys = [g.key].concat(g.alias, mbls).filter(function (x, i, a) { return x && a.indexOf(x) === i; });
       g.first = g.recs[0]; g.latest = g.recs[g.recs.length - 1];
     });
     return groups;
   }
 
-  // A/N 묶음 → 대장 PO: 글에 적힌 PO 번호, 또는 대장에 적힌 B/L 번호가 같은 PO
+  // A/N 묶음 → 대장 PO: 글에 적힌 PO 번호, 또는 대장에 적힌 B/L 번호(HBL·MBL)가 같은 PO
   function anMatch(g, db) {
     var list = [], seen = {}, unknown = [];
     g.poList.forEach(function (no) {
@@ -1845,39 +2269,72 @@
     return { list: list, unknown: unknown };
   }
 
-  // 항차등록 대기: B/L 이 있고 A/N 을 받았는데 아직 「등록 완료」가 아닌 PO. 열쇠 = PO 번호 | B/L(분할 선적이면 B/L 마다 한 줄)
+  // 예전(PO|B/L 별) 등록 표시를 B/L 별로 옮깁니다. 같은 B/L 에 PO 가 여럿이면 먼저 등록한 날짜를 두고 PO 를 모읍니다.
+  function anMigrateRegs(db) {
+    var an = db.an = db.an || emptyAn(), regs = an.regs = an.regs || {}, n = 0;
+    Object.keys(regs).forEach(function (k) {
+      if (k.indexOf('|') < 0) return;
+      var po = k.slice(0, k.lastIndexOf('|')), bk = k.slice(k.lastIndexOf('|') + 1), old = regs[k];
+      delete regs[k]; n++;
+      if (!bk) return;
+      var cur = regs[bk];
+      if (!cur) cur = regs[bk] = { date: old.date, eta: old.eta || '', at: old.at || '', pos: [] };
+      else if (str(old.date) && str(old.date) < str(cur.date)) { cur.date = old.date; cur.eta = old.eta || cur.eta; }
+      cur.pos = cur.pos || [];
+      if (po && cur.pos.indexOf(po) < 0) cur.pos.push(po);
+    });
+    return n;
+  }
+
+  // 항차등록 대기: A/N 을 받은 B/L 한 건 = 한 줄(2026-09-29 밤 요청 「메일에 기재된 B/L 건에 대한 항차 등록 여부 관리」).
+  // 열쇠 = HBL(없으면 MBL). PO 가 여럿이면 한 줄에 PO 목록. 대장에 없는 PO 만 적힌 B/L 도 목록에 올리고 「대장에 없음」 표시.
+  // 대장에 「A/N 수신」과 B/L 번호를 손으로 적은 PO(메일 없음)도 B/L 별로 묶어 올립니다.
   function anQueue(db) {
-    var an = db.an || emptyAn(), regs = an.regs || {};
+    anMigrateRegs(db);
+    var an = db.an, regs = an.regs;
     var groups = anGroups(an.mails), rows = [], unmatched = [], covered = {};
+    function regOf(keys) { for (var i = 0; i < keys.length; i++) if (regs[keys[i]]) return { key: keys[i], reg: regs[keys[i]] }; return null; }
     groups.forEach(function (g) {
       var m = anMatch(g, db);
-      if (!m.list.length) { unmatched.push({ group: g, unknown: m.unknown }); return; }
+      if (!m.list.length) unmatched.push({ group: g, unknown: m.unknown });
       if (!g.bl) return;   // B/L 을 못 읽은 A/N 은 대기 목록에 올리지 않고 메일 목록에서 고치게 함
-      m.list.forEach(function (x) {
-        var key = x.po.po_no + '|' + anKey(g.bl);
-        if (covered[key]) return;
-        covered[key] = true;
-        var reg = regs[key] || null, eta = g.merged.eta || '';
-        rows.push({
-          key: key, po_no: x.po.po_no, supplier_code: x.po.supplier_code, bl: g.bl, mbl: g.merged.mbl || '', via: x.via, source: 'mail',
-          vessel: g.merged.vessel || '', voyage: g.merged.voyage || '', etd: g.merged.etd || '', eta: eta, pod: g.merged.pod || '',
-          etaChanges: g.etaChanges, anCount: g.recs.length, firstAn: g.first.received, lastAn: g.latest.received, unknownPos: m.unknown,
-          reg: reg, etaAfterReg: reg && reg.eta && eta && reg.eta !== eta ? { from: reg.eta, to: eta } : null
-        });
+      g.keys.forEach(function (k) { covered[k] = true; });
+      var key = anKey(g.bl), rg = regOf([key].concat(g.alias)), reg = rg ? rg.reg : null, eta = g.merged.eta || '', mg = g.merged;
+      var ledgerNos = m.list.map(function (x) { return x.po.po_no; });
+      var shown = g.poList.slice(); ledgerNos.forEach(function (no) { if (shown.indexOf(no) < 0) shown.push(no); });
+      var vias = []; m.list.forEach(function (x) { if (vias.indexOf(x.via) < 0) vias.push(x.via); });
+      rows.push({
+        key: key, regKey: rg ? rg.key : key, bl: g.bl, mbl: mg.mbl || '', tms: mg.tms || '', req_no: mg.req_no || '', pos: shown, po_no: shown.join(', '),
+        ledger: m.list.map(function (x) { return { po_no: x.po.po_no, supplier_code: x.po.supplier_code, via: x.via }; }), unknownPos: m.unknown,
+        supplier_code: m.list.length ? m.list[0].po.supplier_code : '', via: vias.join(', ') || '대장 연결 없음', source: 'mail',
+        vessel: mg.vessel || '', voyage: mg.voyage || '', etd: mg.etd || '', eta: eta, pol: mg.pol || '', pod: mg.pod || '',
+        containers: g.containers, cargo_type: mg.cargo_type || '', mode: mg.mode || '', incoterms: mg.incoterms || '', local_ar: mg.local_ar || '',
+        shipper: mg.shipper || '', forwarder: mg.forwarder || '',
+        etaChanges: g.etaChanges, anCount: g.recs.length, firstAn: g.first.received, lastAn: g.latest.received,
+        reg: reg, etaAfterReg: reg && reg.eta && eta && reg.eta !== eta ? { from: reg.eta, to: eta } : null
       });
     });
-    // 메일 없이 대장에 「A/N 수신」과 B/L 을 손으로 적은 PO 도 대기 대상
+    // 메일 없이 대장에 「A/N 수신」과 B/L 을 손으로 적은 PO 도 대기 대상(같은 B/L 의 PO 는 한 줄로)
+    var hand = {}, handOrder = [];
     db.pos.forEach(function (p) {
       if (!p.an_received || !p.bl_no) return;
-      var key = p.po_no + '|' + anKey(p.bl_no);
-      if (covered[key]) return;
-      covered[key] = true;
-      var reg = regs[key] || null;
-      rows.push({ key: key, po_no: p.po_no, supplier_code: p.supplier_code, bl: p.bl_no, mbl: '', via: '대장', source: 'ledger',
-        vessel: '', voyage: '', etd: p.etd || '', eta: p.eta || '', pod: '', etaChanges: [], anCount: 0, firstAn: '', lastAn: '', unknownPos: [],
-        reg: reg, etaAfterReg: reg && reg.eta && p.eta && reg.eta !== p.eta ? { from: reg.eta, to: p.eta } : null });
+      var key = anKey(p.bl_no);
+      if (!key || covered[key]) return;
+      if (!hand[key]) { hand[key] = { bl: p.bl_no, list: [] }; handOrder.push(key); }
+      hand[key].list.push(p);
     });
-    rows.sort(function (a, b) { return str(a.eta || '9999').localeCompare(str(b.eta || '9999')) || a.po_no.localeCompare(b.po_no); });
+    handOrder.forEach(function (key) {
+      var hx = hand[key], rg = regOf([key]), reg = rg ? rg.reg : null, p0 = hx.list[0];
+      var eta = hx.list.map(function (p) { return p.eta || ''; }).filter(Boolean).sort().pop() || '';
+      var nos = hx.list.map(function (p) { return p.po_no; });
+      rows.push({ key: key, regKey: key, bl: hx.bl, mbl: '', tms: '', req_no: '', pos: nos, po_no: nos.join(', '),
+        ledger: hx.list.map(function (p) { return { po_no: p.po_no, supplier_code: p.supplier_code, via: '대장' }; }), unknownPos: [],
+        supplier_code: p0.supplier_code, via: '대장', source: 'ledger',
+        vessel: '', voyage: '', etd: p0.etd || '', eta: eta, pol: '', pod: '', containers: [], cargo_type: '', mode: '', incoterms: '', local_ar: '', shipper: '', forwarder: '',
+        etaChanges: [], anCount: 0, firstAn: '', lastAn: '',
+        reg: reg, etaAfterReg: reg && reg.eta && eta && reg.eta !== eta ? { from: reg.eta, to: eta } : null });
+    });
+    rows.sort(function (a, b) { return str(a.eta || '9999').localeCompare(str(b.eta || '9999')) || a.po_no.localeCompare(b.po_no) || a.key.localeCompare(b.key); });
     return {
       groups: groups, rows: rows, unmatched: unmatched,
       pending: rows.filter(function (r) { return !r.reg; }),
@@ -1886,7 +2343,7 @@
     };
   }
 
-  // 같은 메일(보낸 사람·제목·보낸 시각·본문이 같음)은 한 번만 넣습니다.
+  // 같은 메일(보낸 사람·제목·보낸 시각·본문이 같음, 표면 같은 B/L 줄)은 한 번만 넣습니다.
   function anAddMails(db, recs) {
     db.an = db.an || emptyAn();
     var ids = db.an.mails.map(function (r) { return r.id; }), added = 0, skipped = 0;
@@ -1894,48 +2351,50 @@
     return { added: added, skipped: skipped };
   }
 
-  // 대장에 반영: A/N 수신 표시, B/L 번호(비어 있을 때만), ETA(가장 최근 A/N 값), ETD(비어 있을 때만)
+  // 대장에 반영: 붙은 PO 마다 A/N 수신 표시, B/L 번호(비어 있을 때만), ETA(가장 최근 A/N 값), ETD(비어 있을 때만)
   function anSyncToPos(db) {
     var q = anQueue(db), n = 0;
     q.rows.forEach(function (r) {
       if (r.source !== 'mail') return;
-      var p = db.pos.filter(function (x) { return x.po_no === r.po_no; })[0];
-      if (!p) return;
-      var before = JSON.stringify([p.an_received, p.bl_no, p.eta, p.etd]);
-      p.an_received = true;
-      if (!p.bl_no) p.bl_no = r.bl;
-      if (r.eta) p.eta = r.eta;
-      if (!p.etd && r.etd) p.etd = r.etd;
-      if (JSON.stringify([p.an_received, p.bl_no, p.eta, p.etd]) !== before) n++;
+      r.ledger.forEach(function (x) {
+        var p = db.pos.filter(function (y) { return y.po_no === x.po_no; })[0];
+        if (!p) return;
+        var before = JSON.stringify([p.an_received, p.bl_no, p.eta, p.etd]);
+        p.an_received = true;
+        if (!p.bl_no) p.bl_no = r.bl;
+        if (r.eta) p.eta = r.eta;
+        if (!p.etd && r.etd) p.etd = r.etd;
+        if (JSON.stringify([p.an_received, p.bl_no, p.eta, p.etd]) !== before) n++;
+      });
     });
     return n;
   }
 
   function anHistPush(db, e) { db.an.history.push(e); }
-  // 항차등록 완료 표시. date = 등록일(사람이 고름), now = 누른 시각(이력)
+  // 항차등록 완료 표시(B/L 별). date = 등록일(사람이 고름), now = 누른 시각(이력). 그 B/L 의 PO·TMS NO 를 함께 남깁니다.
   function anRegister(db, rows, date, now) {
     db.an = db.an || emptyAn();
     now = now || new Date().toISOString();
     rows.forEach(function (r) {
-      db.an.regs[r.key] = { date: date, eta: r.eta || '', at: now };
-      anHistPush(db, { at: now, action: 'register', po_no: r.po_no, bl: r.bl, date: date, eta: r.eta || '' });
+      db.an.regs[r.key] = { date: date, eta: r.eta || '', at: now, pos: (r.pos || []).slice(), tms: r.tms || '', bl: r.bl };
+      anHistPush(db, { at: now, action: 'register', po_no: r.po_no, bl: r.bl, tms: r.tms || '', date: date, eta: r.eta || '' });
     });
     return rows.length;
   }
   function anUnregister(db, row, now) {
     now = now || new Date().toISOString();
-    var reg = db.an.regs[row.key];
+    var k = row.regKey || row.key, reg = db.an.regs[k];
     if (!reg) return false;
-    delete db.an.regs[row.key];
-    anHistPush(db, { at: now, action: 'unregister', po_no: row.po_no, bl: row.bl, date: reg.date, eta: reg.eta });
+    delete db.an.regs[k];
+    anHistPush(db, { at: now, action: 'unregister', po_no: row.po_no, bl: row.bl, tms: row.tms || '', date: reg.date, eta: reg.eta });
     return true;
   }
   // 등록 뒤 ETA 가 바뀐 건: SRM 조정 ETA 를 고쳐 넣었다고 표시(등록 때 ETA 를 새 값으로)
   function anConfirmEta(db, row, now) {
     now = now || new Date().toISOString();
-    var reg = db.an.regs[row.key];
+    var reg = db.an.regs[row.regKey || row.key];
     if (!reg || !row.etaAfterReg) return false;
-    anHistPush(db, { at: now, action: 'eta_confirm', po_no: row.po_no, bl: row.bl, date: reg.date, eta_from: reg.eta, eta: row.eta });
+    anHistPush(db, { at: now, action: 'eta_confirm', po_no: row.po_no, bl: row.bl, tms: row.tms || '', date: reg.date, eta_from: reg.eta, eta: row.eta });
     reg.eta = row.eta;
     return true;
   }
@@ -1945,13 +2404,17 @@
     var an = db.an || emptyAn();
     var out = an.history.map(function (e) { return Object.assign({ kind: 'user' }, e); });
     anGroups(an.mails).forEach(function (g) {
-      g.etaChanges.forEach(function (c) { out.push({ kind: 'mail', at: c.at, action: 'eta_change', po_no: g.poList.join(', '), bl: g.bl, eta_from: c.from, eta: c.to, file: c.file }); });
+      g.etaChanges.forEach(function (c) { out.push({ kind: 'mail', at: c.at, action: 'eta_change', po_no: g.poList.join(', '), bl: g.bl, tms: g.merged.tms || '', eta_from: c.from, eta: c.to, file: c.file }); });
     });
     return out.sort(function (a, b) { return str(b.at).localeCompare(str(a.at)); });
   }
+  // 대장 한 줄의 항차등록일: 그 PO 가 든 B/L 의 등록일(예전 PO|B/L 열쇠도 읽음)
   function anRegDateOf(db, poNo) {
     var regs = (db && db.an && db.an.regs) || {}, out = [];
-    Object.keys(regs).forEach(function (k) { if (k.split('|')[0] === poNo) out.push(regs[k].date); });
+    Object.keys(regs).forEach(function (k) {
+      var r = regs[k];
+      if ((r.pos && r.pos.indexOf(poNo) >= 0) || (k.indexOf('|') >= 0 && k.split('|')[0] === poNo)) if (out.indexOf(r.date) < 0) out.push(r.date);
+    });
     return out.join(', ');
   }
 
@@ -1963,19 +2426,31 @@
       var m = g ? anMatch(g, db) : { list: [], unknown: [] };
       var o = { '받은 날': r.received, '파일': r.file, '보낸 사람': r.from, '제목': r.subject };
       AN_FIELDS.forEach(function (f) { o[f.label] = r.fields[f.key]; });
+      var money = anMoney(r.fields.local_ar);
+      o['PO 수'] = anPoList(r.fields.pos).length;
+      o['컨테이너 수'] = anContainerList(r.fields.containers).length;
+      o['Local AR 통화'] = money ? money.ccy : '';
+      o['Local AR 금액'] = money ? money.amount : '';
       o['중량(kg 환산)'] = weightKg(r.fields.weight) == null ? '' : weightKg(r.fields.weight);
       o['대장 PO 연결'] = m.list.map(function (x) { return x.po.po_no + '(' + x.via + ')'; }).join(', ');
       o['대장에 없는 PO 번호'] = m.unknown.join(', ');
       o['고친 칸'] = AN_FIELDS.filter(function (f) { return r.parsed && r.fields[f.key] !== r.parsed[f.key]; }).map(function (f) { return f.label; }).join(', ');
+      o['확인 메모'] = (r.notes || []).join(' / ');
       return o;
     });
   }
   function anQueueRows(rows, db) {
     return rows.map(function (r) {
-      var s = supplierByCode(db.suppliers, r.supplier_code);
+      var names = [];
+      r.ledger.forEach(function (x) { var s = supplierByCode(db.suppliers, x.supplier_code); var n = s ? s.name : x.supplier_code; if (n && names.indexOf(n) < 0) names.push(n); });
+      var money = anMoney(r.local_ar);
       return {
-        'PO 번호': r.po_no, '업체': s ? s.name : r.supplier_code, 'B/L 번호': r.bl, 'Master B/L': r.mbl, '연결 근거': r.via,
-        '선명': r.vessel, '항차': r.voyage, 'ETD': r.etd, 'ETA': r.eta, '도착항': r.pod,
+        'B/L(HBL)': r.bl, 'MBL': r.mbl, 'TMS NO': r.tms, '신청번호': r.req_no,
+        'PO 번호': r.po_no, 'PO 수': r.pos.length, '대장 PO 연결': r.ledger.map(function (x) { return x.po_no + '(' + x.via + ')'; }).join(', '),
+        '대장에 없는 PO': r.unknownPos.join(', '), '업체': names.join(', '), 'SHIPPER': r.shipper,
+        '운송 구분': r.mode, '화물형태': r.cargo_type, '컨테이너': anContainerText(r.containers), '컨테이너 수': r.containers.length,
+        'Incoterms': r.incoterms, 'Local AR': r.local_ar, 'Local AR 통화': money ? money.ccy : '', 'Local AR 금액': money ? money.amount : '',
+        '선명·편명': r.vessel, '항차': r.voyage, 'ETD': r.etd, 'ETA': r.eta, '적재항': r.pol, '도착항': r.pod,
         'ETA 변경': r.etaChanges.map(function (c) { return c.from + ' → ' + c.to; }).join('; '),
         'A/N 통수': r.anCount, '첫 A/N': r.firstAn, '마지막 A/N': r.lastAn,
         '항차등록일': r.reg ? r.reg.date : '', '등록 때 ETA': r.reg ? r.reg.eta : '',
@@ -1985,7 +2460,7 @@
   }
   function anHistoryRows(db) {
     return anHistory(db).map(function (e) {
-      return { '시각': e.at, '구분': AN_ACTION[e.action] || e.action, 'PO 번호': e.po_no, 'B/L 번호': e.bl, '등록일': e.date || '', '이전 ETA': e.eta_from || '', 'ETA': e.eta || '', '근거 파일': e.file || '' };
+      return { '시각': e.at, '구분': AN_ACTION[e.action] || e.action, 'B/L 번호': e.bl, 'TMS NO': e.tms || '', 'PO 번호': e.po_no, '등록일': e.date || '', '이전 ETA': e.eta_from || '', 'ETA': e.eta || '', '근거 파일': e.file || '' };
     });
   }
   // CSV — 엑셀에서 한글이 깨지지 않도록 BOM, 칸 안의 쉼표·따옴표·줄바꿈은 따옴표로 감쌈
@@ -2043,7 +2518,10 @@
     emptyAn: emptyAn, AN_FIELDS: AN_FIELDS, AN_ACTION: AN_ACTION, datesIn: datesIn, weightKg: weightKg, anKey: anKey, anPoList: anPoList,
     parseArrivalNotice: parseArrivalNotice, anMailFromText: anMailFromText, anGroups: anGroups, anMatch: anMatch, anQueue: anQueue,
     anAddMails: anAddMails, anSyncToPos: anSyncToPos, anRegister: anRegister, anUnregister: anUnregister, anConfirmEta: anConfirmEta,
-    anHistory: anHistory, anRegDateOf: anRegDateOf, anMailRows: anMailRows, anQueueRows: anQueueRows, anHistoryRows: anHistoryRows, toCsv: toCsv
+    anHistory: anHistory, anRegDateOf: anRegDateOf, anMailRows: anMailRows, anQueueRows: anQueueRows, anHistoryRows: anHistoryRows, toCsv: toCsv,
+    anSplitPos: anSplitPos, anContainerList: anContainerList, anContainerText: anContainerText, anMoney: anMoney, anIncoterms: anIncoterms, anMode: anMode,
+    anTmsLabels: anTmsLabels, AN_TMS_DEFAULT: AN_TMS_DEFAULT, anHtmlTables: anHtmlTables, anTextGrids: anTextGrids, anHeaderMap: anHeaderMap,
+    anRecordsFromGrid: anRecordsFromGrid, anRecordsFromPages: anRecordsFromPages, anParseAll: anParseAll, anMigrateRegs: anMigrateRegs
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.OMLogic = api;

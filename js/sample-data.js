@@ -390,10 +390,161 @@
     ];
   }
 
+  /* ── 실물 「도착일정통지」 양식을 본뜬 예시(2026-09-29 밤) — 구조만 같고 값은 모두 지어낸 것 ── */
+  // 해상: 본문 HTML 표 14칸(신청번호 한 건 = 한 줄, PO LIST 에 전각 쉼표·붙은 번호·줄바꿈, 컨테이너 여럿이면
+  //       화물형태·컨테이너번호·CONTAINER TYPE 이 줄을 바꿔 되풀이 — 나머지 칸은 rowspan) + 같은 내용의 엑셀(31칸, 컨테이너마다 한 줄)
+  //       + House B/L 사본 PDF(칸 이름 없이 값만, 4쪽 = B/L 3장 + ATTACHED RIDER)
+  // 항공: ks_c_5601-1987 제목·본문(quoted-printable HTML 표 16칸, HAWB 한 건 = 한 줄) + HAWB PDF(「HIPRO:」「PO:」)
+  var EKR = {   // 한글 조각의 EUC-KR(CP949) 바이트(base64) — 실물 항공 메일과 같은 문자 집합으로 만들기 위함
+    airSubj: 'W7W1wvjAz8GkxevB9l/H17D4XSC/ub3Dwd+w+L73KL+5vcMp',
+    hello: 'vPa9xcDOIMGmwKcs',
+    intro: 'x8+x4r/NILCwwMwgx6XBpiC8scD7ILDHILD8t8MgtbXC+MDPwaQgvsizuyC15biztM+02S4gKL+5vcMgLSC9x8GmIMitubAgvsa01Ck=',
+    reqNo: 'vcXDu7n4yKM=',
+    plant: 'v7m9w7vnvve6zg==',
+    thanks: 'sKi758fVtM+02S4=',
+    fromName: 'v7m9w8b3v/a09SDH17D4vPbA1MbA'
+  };
+  function b64bin(b) {   // base64 → 한 바이트 = 한 글자 문자열
+    if (typeof Buffer !== 'undefined') return Buffer.from(b, 'base64').toString('latin1');
+    return atob(b);
+  }
+  function binb64(s) {
+    if (typeof Buffer !== 'undefined') return Buffer.from(s, 'latin1').toString('base64');
+    return btoa(s);
+  }
+  function qp(bin) {   // quoted-printable(76자 줄, 끝 =)
+    var out = '', line = '';
+    for (var i = 0; i < bin.length; i++) {
+      var c = bin.charCodeAt(i), t;
+      if (bin[i] === '\n') { out += line + '\r\n'; line = ''; continue; }
+      if (bin[i] === '\r') continue;
+      t = (c >= 33 && c <= 126 && c !== 61) || c === 32 ? bin[i] : '=' + (c < 16 ? '0' : '') + c.toString(16).toUpperCase();
+      if (line.length + t.length > 75) { out += line + '=\r\n'; line = ''; }
+      line += t;
+    }
+    return out + line;
+  }
+  var AN_MONS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+  function blDate(today, n) { var d = shift(today, n).split('-'); return AN_MONS[+d[1] - 1] + '.' + d[2] + '.' + d[0]; }   // SEP.02.2026 모양
+  var AN_SEA = [   // 해상 세 건 — 셋째 건은 PO 6개(붙은 번호·줄바꿈·전각 쉼표), 컨테이너 4개
+    { req: 'EXM2610A0001', pos: 'EX4500010006', inc: 'FCA', ar: 'USD : 980.00', pol: 'SHA', loc: 'SHANGHAI , CHINA', ves: 'EXAMPLE BREEZE', voy: '2610E', shipper: 'EXAMPLE PUMP CO., LTD. (SAMPLE)',
+      mbl: 'EXSH261001', hbl: 'EXSH261001', cargo: 'LCL', eta: 4, cntrs: [], item: 'AXIAL PUMP (SAMPLE)', qty: 3, wt: 510, cbm: 0.65, onboard: -3 },
+    { req: 'EXM2610A0002', pos: 'EX4500010007，O261000002，O261000003', inc: 'EXW', ar: 'USD : 4,321.50', pol: 'SHA', loc: 'SHANGHAI , CHINA', ves: 'EXAMPLE OCEAN', voy: '2608E', shipper: 'EXAMPLE CHAIR MFG. CO. (SAMPLE)',
+      mbl: 'EXMB0000000002', hbl: 'EXSH261002', cargo: 'F40', eta: 4, cntrs: [['EXAU1234560', '40DC', '40HC']], item: 'OPERATOR CHAIR (SAMPLE)', qty: 22, wt: 3900, cbm: 38.2, onboard: -4 },
+    { req: 'EXM2610A0003', pos: 'O261000004O261000005O261000006O261000007\nO261000008，O261000009', inc: 'FOB', pdfInc: 'EXW', ar: 'USD : 3,210.00', pol: 'NGB', loc: 'NINGBO , CHINA', ves: 'EXAMPLE GALE', voy: '2610E', shipper: 'EXAMPLE CYLINDER CO., LTD (SAMPLE)',
+      mbl: 'EXMB0000000003', hbl: 'EXZB261003', cargo: 'F40', eta: 4, cntrs: [['EXBU1000001', '40DC', '40HC'], ['EXCU2000002', '40DC', '40HC'], ['EXDU3000003', '40DC', '40HC'], ['EXEU4000004', '40DC', '40HC']],
+      item: 'HYDRAULIC RAM (SAMPLE)', qty: 37, wt: 57400, cbm: 113.6, onboard: -2 }
+  ];
+  var AN_SEA_HEAD = ['신청번호', 'PO LIST', 'Incoterms', 'Local AR', '적재항', '도착항', '편명', 'SHIPPER', 'MBLNO', 'HBLNO', '화물형태', '입항일', '컨테이너번호', 'CONTAINER TYPE'];
+  var AN_XLS_HEAD = ['신청번호', '적하목록번호', '품명', 'PO LIST', 'Incoterms', 'Local AR', 'LC NO', '적재항', '도착항', '편명', '부두', '장치장장소', '작업장소', '장치장이름', 'SHIPPER', 'CONSIGNEE', 'MBLNO', 'HBLNO',
+    '화물형태', '입항일', '수량', '중량', '용적', '수량단위', '포워더', '선적지', '사업부', 'SUB사업부', '컨테이너번호', 'CONTAINER TYPE', '하역사'];
+  function anSeaHtml(today) {
+    var esc = function (s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/\n/g, '<br>'); };
+    var td = function (v, rs) { return '<td' + (rs > 1 ? ' rowspan="' + rs + '"' : '') + ' style="border:1px solid #999">' + esc(v) + '</td>'; };
+    var rows = AN_SEA.map(function (s) {
+      var n = Math.max(1, s.cntrs.length), c0 = s.cntrs[0] || ['', ''];
+      var first = '<tr>' + [s.req, s.pos, s.inc, s.ar, s.pol, 'PUS', s.ves, s.shipper, s.mbl, s.hbl].map(function (v) { return td(v, n); }).join('') +
+        td(s.cargo, 1) + td(shift(today, s.eta), n) + td(c0[0], 1) + td(c0[1], 1) + '</tr>';
+      return first + s.cntrs.slice(1).map(function (c) { return '<tr>' + td(s.cargo, 1) + td(c[0], 1) + td(c[1], 1) + '</tr>'; }).join('');
+    }).join('');
+    return '<html><head><meta charset="utf-8"><style>td{font-size:9pt}</style></head><body><p>예시 고객사 담당자님, 아래 화물의 부산항 도착 일정을 알려 드립니다. (예시 — 실제 화물 아님)</p>' +
+      '<table style="border-collapse:collapse"><tr>' + AN_SEA_HEAD.map(function (h) { return '<th style="border:1px solid #999;background:#dde">' + h + '</th>'; }).join('') + '</tr>' + rows + '</table>' +
+      '<p>감사합니다.<br>예시포워더 해상수입팀</p></body></html>';
+  }
+  function anSeaGrid(today) {
+    var out = [AN_XLS_HEAD.slice()];
+    AN_SEA.forEach(function (s, i) {
+      (s.cntrs.length ? s.cntrs : [['', '']]).forEach(function (c) {
+        out.push([s.req, s.cntrs.length ? 'EXMF26000' + (i + 1) : '', s.item, s.pos.replace(/\n/g, ''), s.inc, s.ar, '', s.pol, 'PUS', s.ves, '', s.cntrs.length ? '0300000' + i : '', '', '예시터미널', s.shipper,
+          'EXAMPLE BUYER CO., LTD. (SAMPLE)', s.mbl, s.hbl, s.cargo, shift(today, s.eta), s.qty, s.wt, s.cbm, 'PKGS', '예시포워더', s.loc, 'M', '', c[0], c[1], '']);
+      });
+    });
+    return out;
+  }
+  // B/L 사본 PDF 쪽 글 — 실물처럼 칸 이름(그림)은 없고 값만. B/L 번호는 쪽 위에 두 번, 컨테이너 4개 건은 RIDER 쪽
+  function anSeaPdfPages(today) {
+    var pages = AN_SEA.map(function (s) {
+      var p = [s.hbl, s.hbl, s.shipper, 'NO.1 EXAMPLE ROAD, EXAMPLE CITY', 'EXAMPLE BUYER CO., LTD. (SAMPLE)', 'SAME AS CONSIGNEE', 'EXAMPLE FORWARDER CO., LTD.', s.loc,
+        s.loc + '   BUSAN KOREA   BUSAN KOREA', s.ves + '   ' + s.voy, 'LOADED ON BOARD', '_____________________', blDate(today, s.onboard), 'CY/CY'];
+      if (s.cntrs.length) p.push(s.cntrs.length + " X 40'HC");
+      p.push('(' + s.qty + ' PACKAGES)   "SHIPPER`S LOAD & COUNT"', s.wt.toLocaleString('en-US') + '.00 KGS   ' + s.cbm + ' CBM');
+      if (s.cntrs.length > 1) p.push('ATTACHED RIDER', 'ATTACHED RIDER');
+      else {
+        p.push(s.item, s.cntrs.length ? 'CONTRACT NO.:' : 'PO NO.:', s.pos, 'INCOTERMS:' + (s.pdfInc || s.inc), '"FREIGHT COLLECT"');
+        s.cntrs.forEach(function (c) { p.push(c[0] + ' / 100001 / ' + c[2] + ' / ' + s.qty + ' PT / ' + s.wt + ' KG'); });
+      }
+      p.push('DESTINATION', 'ZERO / 0', blDate(today, s.onboard) + '   ' + s.loc, 'FREIGHT COLLECT   AS ARRANGED');
+      return p;
+    });
+    var r = AN_SEA[2];
+    var rider = ['H.B/L: ' + r.hbl + ' Vessel/Voy:' + r.ves + ' / ' + r.voy + '   BUSAN KOREA POD : POL : ' + r.loc, 'ATTACHED RIDER', 'Container No. & SealNo.'];
+    r.cntrs.forEach(function (c, i) { rider.push(c[0] + ' / 20000' + i + ' /', c[2] + ' / 9 PKGS / 14,000 K', 'G / 28.0 CBM'); });
+    rider.push(r.item);
+    var ps = r.pos.split(/[\n，]/).join('').match(/[A-Z]\d{9}/g);
+    rider.push('CONTRACT NO. :' + ps[0]); ps.slice(1).forEach(function (x) { rider.push(x); });
+    rider.push('INCOTERMS' + r.pdfInc, '"FREIGHT COLLECT"');
+    pages.push(rider);
+    return pages;
+  }
+  var AN_AIR = [
+    { no: 1, mawb: '18000000011', hawb: 'EXAW261001', flt: 'KE999', cnt: 4, wt: '1,950.00', req: 'EXM2610B0011', remark: 'DG CARGO' },
+    { no: 2, mawb: '18000000012', hawb: 'EXAW261002', flt: 'KE999', cnt: 5, wt: '2,440.00', req: 'EXM2610B0012', remark: '' }
+  ];
+  function anAirPdfPages(today, a) {
+    var d = shift(today, -1).split('-');
+    return [['180 FRA   00000011   ' + a.hawb, "Shipper's Name and Address   Not Negotiable", 'EXAMPLE ENGINE GMBH (SAMPLE)', 'House Air Waybill', 'EXAMPLE BUYER CO., LTD. (SAMPLE)',
+      a.cnt + '   ' + a.wt + ' KG Q   ' + a.wt + '   As Agreed   ENGINES', 'INV: 900000' + a.no, 'PO: EX4500010008', 'HIPRO: ' + a.req, 'EXW', 'Freight Collect',
+      d[2] + '/' + AN_MONS[+d[1] - 1].charAt(0) + AN_MONS[+d[1] - 1].slice(1).toLowerCase() + '/' + d[0] + '   Frankfurt   dos#: ' + a.hawb, a.hawb],
+      ['EXAMPLE ENGINE GMBH (SAMPLE)   INVOICE 900000' + a.no, 'Sample invoice page - not a real document']];
+  }
+  function anAirMail(today, atts) {
+    var eta = shift(today, 4).replace(/-/g, ''), K = function (k) { return b64bin(EKR[k]); };
+    var cells = function (arr, tag) { return arr.map(function (v) { return '<' + tag + ' style="border:1px solid #999">' + v + '</' + tag + '>'; }).join(''); };
+    var html = '<html><head><meta http-equiv="Content-Type" content="text/html; charset=ks_c_5601-1987"></head><body><p>' + K('hello') + '</p><p>' + K('intro') + '</p>' +
+      '<p><b>Arrival Notice</b></p><table style="border-collapse:collapse"><tr>' +
+      cells(['No.', 'SHIPPER NAME', 'MAWB NO', 'HAWB NO', 'FLT', 'DEPA(POL)', 'DEST(POD)', 'ETA', 'TIME', 'CNT', 'W/T', K('reqNo'), 'P.O NO', 'Incoterms', 'PLANT', 'REMARK'], 'td') + '</tr>' +
+      AN_AIR.map(function (a) { return '<tr>' + cells([a.no, 'EXAMPLE ENGINE GMBH (SAMPLE)', a.mawb, a.hawb, a.flt, 'FRA', 'ICN', eta, '16:15', a.cnt, a.wt, a.req, 'EX4500010008', 'EXW', K('plant'), a.remark], 'td') + '</tr>'; }).join('') +
+      '</table><p>' + K('thanks') + '</p></body></html>';
+    var mix = '_an_air_mixed_', alt = '_an_air_alt_';
+    var head = 'From: =?ks_c_5601-1987?B?' + EKR.fromName + '?= <air-an@example-forwarder.example.com>\r\nTo: buyer@our-company.example.com\r\n' +
+      'Subject: =?ks_c_5601-1987?B?' + binb64(K('airSubj') + ' / PO NO: EX4500010008 / FRA / ETA: ' + eta.slice(4, 6) + '.' + eta.slice(6)) + '?=\r\n' +
+      'Date: ' + new Date(shift(today, -1) + 'T01:37:15Z').toUTCString().replace('GMT', '+0000') + '\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary="' + mix + '"\r\n\r\n';
+    var body = '--' + mix + '\r\nContent-Type: multipart/alternative; boundary="' + alt + '"\r\n\r\n' +
+      '--' + alt + '\r\nContent-Type: text/plain; charset="ks_c_5601-1987"\r\nContent-Transfer-Encoding: base64\r\n\r\n' +
+      wrap76(binb64(K('hello') + '\r\n\r\nArrival Notice\r\n\r\nNo.\r\n\r\nSHIPPER NAME\r\n\r\n(sample)\r\n')) +
+      '--' + alt + '\r\nContent-Type: text/html; charset="ks_c_5601-1987"\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n' + qp(html) + '\r\n--' + alt + '--\r\n';
+    (atts || []).forEach(function (a) {
+      body += '--' + mix + '\r\nContent-Type: application/pdf; name="' + a.name + '"\r\nContent-Disposition: attachment; filename="' + a.name + '"\r\nContent-Transfer-Encoding: base64\r\n\r\n' + wrap76(a.b64);
+    });
+    return head + body + '--' + mix + '--\r\n';
+  }
+  function anSeaMail(today, atts) {
+    var mix = '_an_sea_mixed_';
+    var head = 'From: =?utf-8?B?' + b64utf8('예시포워더 해상수입팀') + '?= <sea-an@example-forwarder.example.com>\r\nTo: buyer@our-company.example.com\r\n' +
+      'Subject: =?utf-8?B?' + b64utf8('[도착일정통지_해상] 예시중공업(예시) A/N_부산 ' + shift(today, 2)) + '?=\r\n' +
+      'Date: ' + new Date(shift(today, 0) + 'T00:30:00Z').toUTCString().replace('GMT', '+0000') + '\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary="' + mix + '"\r\n\r\n';
+    var body = '--' + mix + '\r\nContent-Type: text/html; charset="utf-8"\r\nContent-Transfer-Encoding: base64\r\n\r\n' + wrap76(b64utf8(anSeaHtml(today)));
+    (atts || []).forEach(function (a) {
+      var nm = '=?utf-8?B?' + b64utf8(a.name) + '?=';   // 한글 파일 이름은 RFC 2047 로(Outlook 과 같은 방식)
+      body += '--' + mix + '\r\nContent-Type: ' + a.type + '; name="' + nm + '"\r\nContent-Disposition: attachment; filename="' + nm + '"\r\nContent-Transfer-Encoding: base64\r\n\r\n' + wrap76(a.b64);
+    });
+    return head + body + '--' + mix + '--\r\n';
+  }
+  // 화면의 「예시 A/N으로 해 보기」용: 메일 글 + 첨부를 이미 읽은 모양(엑셀 칸·PDF 쪽 글)으로
+  function anRealMails(today) {
+    return [
+      { name: '예시데이터_AN5_도착일정통지_해상.eml', text: anSeaMail(today, []), grids: [{ name: '예시_AN_부산.xls', rows: anSeaGrid(today) }],
+        pdfs: [{ name: '예시_AN_부산.pdf', pages: anSeaPdfPages(today).map(function (p) { return p.join('\n'); }) }] },
+      { name: '예시데이터_AN6_도착일정통지_항공.eml', text: anAirMail(today, []),
+        pdfs: AN_AIR.map(function (a) { return { name: a.hawb + '.pdf', pages: anAirPdfPages(today, a).map(function (p) { return p.join('\n'); }) }; }) }
+    ];
+  }
+
   var api = { contactRows: contactRows, ledger: ledger, poPdfs: poPdfs, weeklyOld: weeklyOld, weeklyNew: weeklyNew, packingRows: packingRows, blWeights: blWeights, mails: mails, shift: shift,
     echoSupplier: echoSupplier, realPoLines: realPoLines, realPoPaste: realPoPaste, realLedger: realLedger, ocGrid: ocGrid, ocFiles: ocFiles, replyEml: replyEml,
     WOS_HEAD: WOS_HEAD, weeklyWk37: weeklyWk37, weeklyWk38: weeklyWk38,
-    foxSupplier: foxSupplier, cumLedger: cumLedger, CUM_HEAD: CUM_HEAD, cumGrid: cumGrid, cumPrevGrid: cumPrevGrid, CUM_AS_OF: CUM_AS_OF, anMails: anMails };
+    foxSupplier: foxSupplier, cumLedger: cumLedger, CUM_HEAD: CUM_HEAD, cumGrid: cumGrid, cumPrevGrid: cumPrevGrid, CUM_AS_OF: CUM_AS_OF, anMails: anMails,
+    anRealMails: anRealMails, anSeaHtml: anSeaHtml, anSeaGrid: anSeaGrid, anSeaPdfPages: anSeaPdfPages, anAirPdfPages: anAirPdfPages, anAirMail: anAirMail, anSeaMail: anSeaMail, AN_SEA: AN_SEA, AN_AIR: AN_AIR };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.OMSample = api;
 })(typeof window !== 'undefined' ? window : this);

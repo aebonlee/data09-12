@@ -104,18 +104,25 @@ ETA     : 24-OCT-2026$txt$);
     '23514', 'A/N 근거 원문(src)은 JSON 객체다');
   insert into public.voyage_registration (po_no, bl_key, bl_no, registered_on, eta_at_registration)
   values ('EX4500010001', 'ALGS2609001', 'ALGS2609001', '2026-09-29', '2026-10-24');
-  perform public._assert_raises($s$insert into public.voyage_registration (po_no, bl_key, registered_on) values ('EX4500010001', 'ALGS2609001', '2026-09-30')$s$,
-    '23505', '같은 PO × B/L 의 항차등록은 한 줄이다');
+  perform public._assert_raises($s$insert into public.voyage_registration (po_no, bl_key, registered_on) values ('EX4500010002', 'ALGS2609001', '2026-09-30')$s$,
+    '23505', '같은 B/L 의 항차등록은 한 줄이다(PO 가 달라도) — 2026-09-29 밤 B/L 별');
+  insert into public.voyage_registration (bl_key, bl_no, po_nos, tms_no, registered_on)
+  values ('EXZB261003', 'EXZB261003', 'O261000004, O261000005', 'T-EX-1', '2026-09-30');   -- PO 칸 없이 B/L 만으로 등록
+  insert into public.arrival_notice (mail_key, bl_no, tms_no, req_no, incoterms, local_ar, local_ar_ccy, local_ar_amount, cargo_type, transport_mode, po_nos)
+  values ('an1abc-exzb261003', 'EXZB261003', '', 'EXM2610A0003', 'FOB', 'USD : 3,210.00', 'USD', 3210, 'F40', '해상',
+          'O261000004, O261000005, O261000006, O261000007, O261000008, O261000009');
+  perform public._assert_eq((select local_ar_amount from public.arrival_notice where mail_key = 'an1abc-exzb261003'), 3210.00::numeric, 'Local AR 금액은 숫자로 따로 둔다');
   perform public._assert_raises($s$insert into public.voyage_registration (po_no, bl_key, registered_on) values ('EX4500010001', 'algs-2609', '2026-09-30')$s$,
     '23514', 'bl_key 는 영문 대문자·숫자만');
   insert into public.voyage_history (action, po_no, bl_no, registered_on, eta) values ('register', 'EX4500010001', 'ALGS2609001', '2026-09-29', '2026-10-24');
+  insert into public.voyage_history (action, bl_no, tms_no, registered_on) values ('register', 'EXZB261003', 'T-EX-1', '2026-09-30');   -- PO 없는 B/L 이력
   perform public._assert_raises($s$insert into public.voyage_history (action, po_no) values ('delete_all', 'EX4500010001')$s$,
     '23514', '이력 구분은 register·unregister·eta_confirm 만');
   perform public._assert_raises($s$update public.voyage_history set eta = '2026-12-31'$s$,
     '42501', '이력은 본인도 고칠 수 없다 (UPDATE 권한 없음)');
   perform public._assert_raises($s$delete from public.voyage_history$s$,
     '42501', '이력은 본인도 지울 수 없다 (DELETE 권한 없음)');
-  perform public._assert_eq((select count(*) from public.voyage_history), 1::bigint, '이력 1줄이 그대로 남는다');
+  perform public._assert_eq((select count(*) from public.voyage_history), 2::bigint, '이력 2줄이 그대로 남는다');
   perform public._assert((select strpos(body, E'\n') > 0 from public.arrival_notice where mail_key = 'an1abc'),
     'A/N 본문 여러 줄이 실제 줄바꿈으로 저장된다');
 end $t$;

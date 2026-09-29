@@ -466,7 +466,7 @@ test('2행 머리글 찾기, 합계 줄(PO·품번 없음)은 뺌, 노란 줄 4�
 test('Status 오늘 기준 재계산 = 파일 수식 IF(INV# 빔, IF(Promise<TODAY,Abnormal,Undispatched), Dispatched)', () => {
   const f = (inv, promise, promiseRaw) => L.cumminsStatusAsOf({ inv, promise, promiseRaw }, '2026-09-28');
   assert.equal(f('INV-1', '2026-01-01', ''), 'Dispatched');
-  assert.equal(f('', '2026-09-27', ''), 'Abnormal');
+  assert.equal(f('', '2026-09-02', ''), 'Abnormal');
   assert.equal(f('', '2026-09-28', ''), 'Undispatched');        // 같은 날은 < 가 아니므로 Undispatched
   assert.equal(f('', '', ''), 'Abnormal');                      // 빈 칸은 엑셀에서 0 으로 비교
   assert.equal(f('', '', 'cancelled'), 'Undispatched');         // 글자는 숫자보다 크게 비교
@@ -644,7 +644,8 @@ test('대장에 없는 PO 번호만 적힌 A/N 은 「붙지 않은 A/N」, 대�
   d.pos.find(p => p.po_no === 'EX4500010001').bl_no = 'HAND0000001';     // an_received 는 예시에서 이미 true
   const q = L.anQueue(d);
   assert.deepEqual(q.unmatched.map(u => u.unknown), [['M269999999']]);
-  assert.deepEqual(q.pending.map(r => [r.po_no, r.via]), [['EX4500010001', '대장'], ['EX4500010003', '대장']]);   // 03 은 예시 대장에 B/L·A/N 이 이미 있음
+  // 2026-09-29 밤: 메일에 적힌 B/L 은 대장에 PO 가 없어도 항차등록 대기에 올림(「대장 연결 없음」)
+  assert.deepEqual(q.pending.map(r => [r.po_no, r.via]), [['M269999999', '대장 연결 없음'], ['EX4500010001', '대장'], ['EX4500010003', '대장']]);   // 03 은 예시 대장에 B/L·A/N 이 이미 있음
   assert.equal(rec.fields.forwarder, 'fw.example.com');                  // 이름 없는 주소면 도메인
 });
 test('라벨 규칙의 함정: POLAND·GWANGYANG 은 라벨 아님, 문장 속 vessel 은 값 아님, 「ETA BUSAN :」, 「ETD/ETA : a / b」, 「POL / POD」', () => {
@@ -678,6 +679,146 @@ test('CSV: BOM, 쉼표·따옴표 칸은 따옴표로 / 대장 가져오기 열 
   assert.equal(c, '﻿a,b,c\r\n"x,y","say ""hi""",\r\n1,,\r\n');
   const m = L.guessMapping(['PO 번호', 'B/L 번호', 'ETA', '선적 예정일(ETD)'], 'ledger');
   assert.deepEqual([m.bl_no, m.eta, m.etd], ['B/L 번호', 'ETA', '선적 예정일(ETD)']);
+});
+
+console.log('도착 통지(A/N) — 실물 양식(해상 본문 표·엑셀·B/L PDF, 항공 메일) · TMS NO · B/L 별 항차등록 (09-29 밤)');
+test('PO 나누기: 전각 쉼표·줄바꿈·붙어 있는 10자리 번호·중복', () => {
+  assert.deepEqual(L.anSplitPos('O261000001，O261000002，O261000003'), ['O261000001', 'O261000002', 'O261000003']);
+  assert.deepEqual(L.anSplitPos('O261000004O261000005O261000006\nO261000007, O261000004'), ['O261000004', 'O261000005', 'O261000006', 'O261000007']);
+  assert.deepEqual(L.anSplitPos('M266000001'), ['M266000001']);
+  assert.deepEqual(L.anSplitPos('EX4500010007，O261000002'), ['EX4500010007', 'O261000002']);   // 사내 모양이 아닌 번호는 그대로
+  assert.deepEqual(L.anSplitPos('45001234500099', '45\\d{5}'), ['4500123', '4500099']);          // 설정 정규식으로 붙은 번호 끊기
+});
+test('컨테이너: 번호 + 형식(「(40DC)」·「/ 봉인번호 / 40HC」), 같은 번호는 한 번', () => {
+  assert.deepEqual(L.anContainerList('EXBU1000001 / 200000 /\n40HC / 9 PKGS, EXCU2000002(40DC), EXBU1000001'), [{ no: 'EXBU1000001', type: '40HC' }, { no: 'EXCU2000002', type: '40DC' }]);
+  assert.equal(L.anContainerText([{ no: 'EXAU1234560', type: '40DC' }, { no: 'EXBU1000001', type: '' }]), 'EXAU1234560(40DC), EXBU1000001');
+});
+test('Local AR·Incoterms·날짜: 「USD : 4,321.50」 → USD 4321.5 / 「INCOTERMSEXW」 / SEP.02.2026 · 20261002', () => {
+  assert.deepEqual(L.anMoney('USD : 4,321.50'), { ccy: 'USD', amount: 4321.5 });
+  assert.equal(L.anMoney('별도'), null);
+  assert.equal(L.anIncoterms('HYDRAULIC RAM INCOTERMSEXW "FREIGHT"').value, 'EXW');
+  assert.equal(L.anIncoterms('INCOTERMS:FCA').value, 'FCA');
+  assert.deepEqual(L.datesIn('LOADED ON BOARD SEP.02.2026').map(d => d.iso), ['2026-09-02']);
+  assert.equal(L.toDate('20261002'), '2026-10-02');
+});
+const RT = '2026-09-28';
+const seaHtmlGrid = L.anHtmlTables(S.anSeaHtml(RT));
+test('해상 본문 표(HTML): 머리글 14칸, rowspan 을 펼쳐 넷째 건의 컨테이너 줄까지 같은 신청번호로', () => {
+  assert.equal(seaHtmlGrid.length, 1);
+  const g = seaHtmlGrid[0];
+  assert.equal(g[0].length, 14);
+  assert.equal(g.length, 1 + 1 + 1 + 4);                                   // 머리글 + LCL 1 + F40 1 + F40 컨테이너 4줄
+  assert.deepEqual([g[4][0], g[4][10], g[4][11], g[4][12], g[4][13]], ['EXM2610A0003', 'F40', '2026-10-02', 'EXCU2000002', '40DC']);
+  assert.equal(g[3][1], 'O261000004O261000005O261000006O261000007\nO261000008，O261000009');   // <br> 은 줄바꿈으로
+});
+test('해상 본문 표 → 3건: 셋째 건 PO 6개·컨테이너 4개(형식 40DC), 둘째 건 PO 3개(전각 쉼표), 첫째 건 LCL 컨테이너 없음', () => {
+  const recs = L.anRecordsFromGrid(seaHtmlGrid[0], '본문 표', L.defaultSettings());
+  assert.deepEqual(recs.map(r => [r.f.bl, r.pos.length, r.cntrs.length, r.cargo.join(',')]),
+    [['EXSH261001', 1, 0, 'LCL'], ['EXSH261002', 3, 1, 'F40'], ['EXZB261003', 6, 4, 'F40']]);
+  assert.deepEqual(recs[2].cntrs.map(c => c.type), ['40DC', '40DC', '40DC', '40DC']);
+  assert.deepEqual([recs[0].f.req_no, recs[0].f.incoterms, recs[0].f.local_ar, recs[0].f.eta, recs[0].f.mbl], ['EXM2610A0001', 'FCA', 'USD : 980.00', '2026-10-02', 'EXSH261001']);
+  assert.match(recs[2].src.pos, /^본문 표 4행 「PO LIST」/);
+});
+test('해상 엑셀(31칸, 컨테이너마다 한 줄 — 같은 신청번호 4줄) → 3건, 셋째 건 컨테이너 4개', () => {
+  const recs = L.anRecordsFromGrid(S.anSeaGrid(RT), '엑셀', L.defaultSettings());
+  assert.deepEqual(recs.map(r => [r.f.req_no, r.pos.length, r.cntrs.length, r.rows]), [['EXM2610A0001', 1, 0, 1], ['EXM2610A0002', 3, 1, 1], ['EXM2610A0003', 6, 4, 4]]);
+  assert.deepEqual([recs[2].f.forwarder, recs[2].f.packages, recs[2].f.shipper], ['예시포워더', '37 PKGS', 'EXAMPLE CYLINDER CO., LTD (SAMPLE)']);
+});
+test('컨테이너 되풀이 다른 모양: 신청번호·B/L 이 빈 이어진 줄, 머리글보다 긴 줄의 「F40 / 번호 / 40DC」 되풀이', () => {
+  const head = ['신청번호', 'PO LIST', 'HBLNO', '화물형태', '입항일', '컨테이너번호', 'CONTAINER TYPE'];
+  const a = L.anRecordsFromGrid([head, ['EXM1', 'O261000001', 'EXHB0001', 'F40', '2026-10-01', 'EXAU1111111', '40DC'], ['', '', '', 'F40', '', 'EXAU2222222', '40DC'], ['', '', '', 'F40', '', 'EXAU3333333', '40HC']], 't', {});
+  assert.deepEqual(a.map(r => r.cntrs.map(c => c.no + ':' + c.type)), [['EXAU1111111:40DC', 'EXAU2222222:40DC', 'EXAU3333333:40HC']]);
+  const b = L.anRecordsFromGrid([head, ['EXM2', 'O261000002', 'EXHB0002', 'F40', '2026-10-01', 'EXAU4444444', '40DC', 'F40', 'EXAU5555555', '40DC']], 't', {});
+  assert.deepEqual(b[0].cntrs.map(c => c.no), ['EXAU4444444', 'EXAU5555555']);
+});
+test('B/L 사본 PDF(칸 이름 없음): 쪽에 두 번 나오는 번호 = B/L, RIDER 쪽은 「H.B/L:」로 같은 건에 합침, 선명·항차·ON BOARD', () => {
+  const db = L.emptyDb();
+  const recs = L.anRecordsFromPages(S.anSeaPdfPages(RT).map(p => p.join('\n')), 'PDF', db);
+  assert.deepEqual(recs.map(r => [r.f.bl, r.pos.length, r.cntrs.length, r.rows]), [['EXSH261001', 0, 0, 1], ['EXSH261002', 2, 1, 1], ['EXZB261003', 6, 4, 2]]);   // EX 모양 PO 는 대장에 있을 때만
+  assert.deepEqual([recs[0].f.vessel, recs[0].f.voyage, recs[0].f.etd, recs[2].f.incoterms], ['EXAMPLE BREEZE', '2610E', '2026-09-25', 'EXW']);
+  assert.deepEqual(recs[2].cntrs.map(c => c.type), ['40HC', '40HC', '40HC', '40HC']);
+  db.pos = [{ po_no: 'EX4500010006' }];
+  assert.equal(L.anRecordsFromPages(S.anSeaPdfPages(RT).map(p => p.join('\n')), 'PDF', db)[0].pos.join(), 'EX4500010006');
+});
+const seaMail = L.parseEml(L.utf8(S.anSeaMail(RT, [])), { tzOffsetMin: 540 });
+const seaRecs = L.anParseAll(seaMail, anDb(), { file: 'sea', now: 'N' }, { grids: [{ name: '첨부 엑셀', rows: S.anSeaGrid(RT) }], pdfs: [{ name: '첨부 PDF', pages: S.anSeaPdfPages(RT).map(p => p.join('\n')) }] });
+test('해상 메일 한 통(본문 표 + 엑셀 + PDF) → B/L 3건. 엑셀은 같은 건으로 합치고, PDF 로 항차·출항일을 채움', () => {
+  assert.deepEqual(seaRecs.map(r => [r.fields.bl, L.anPoList(r.fields.pos).length, L.anContainerList(r.fields.containers).length, r.fields.voyage, r.fields.etd]),
+    [['EXSH261001', 1, 0, '2610E', '2026-09-25'], ['EXSH261002', 3, 1, '2608E', '2026-09-24'], ['EXZB261003', 6, 4, '2610E', '2026-09-26']]);
+  assert.deepEqual(seaRecs.map(r => r.fields.mode), ['해상', '해상', '해상']);
+  assert.equal(seaRecs[0].fields.mbl, '');                                   // HBL 과 같은 MBL 은 한 번만
+  assert.deepEqual(seaRecs[2].notes, ['Incoterms 「FOB」 · 첨부 PDF 「EXW」 다름 — 확인']);
+  assert.equal(new Set(seaRecs.map(r => r.id)).size, 3);
+});
+test('항공 메일(ks_c_5601-1987 제목·QP HTML 표, HAWB PDF 첨부) → HAWB 2건, 같은 PO, 신청번호 각각', () => {
+  const pdfs = S.AN_AIR.map(a => ({ name: a.hawb + '.pdf', pages: S.anAirPdfPages(RT, a).map(p => p.join('\n')) }));
+  const m = L.parseEml(L.utf8(S.anAirMail(RT, [])), { tzOffsetMin: 540 });
+  assert.match(m.subject, /^\[도착일정통지_항공\] 예시중공업\(예시\) \/ PO NO: EX4500010008/);
+  assert.equal(m.from.split(' <')[0], '예시포워더 항공수입팀');
+  const recs = L.anParseAll(m, L.emptyDb(), { file: 'air', now: 'N' }, { pdfs });
+  assert.deepEqual(recs.map(r => [r.fields.bl, r.fields.mbl, r.fields.req_no, r.fields.pos, r.fields.vessel, r.fields.eta, r.fields.mode]),
+    [['EXAW261001', '18000000011', 'EXM2610B0011', 'EX4500010008', 'KE999', '2026-10-02', '항공'], ['EXAW261002', '18000000012', 'EXM2610B0012', 'EX4500010008', 'KE999', '2026-10-02', '항공']]);
+  assert.match(recs[0].src.eta, /「ETA」 20261002 16:15$/);
+  const alone = L.anParseAll({ subject: '', body: '' }, L.emptyDb(), { now: 'N' }, { pdfs });      // HAWB PDF 만 올려도 신청번호(HIPRO)
+  assert.deepEqual(alone.map(r => [r.fields.bl, r.fields.req_no, r.fields.mode]), [['EXAW261001', 'EXM2610B0011', '항공'], ['EXAW261002', 'EXM2610B0012', '항공']]);
+});
+test('TMS NO: 실물 양식엔 칸이 없어 빈칸 / 표에 「TMS NO」 칸이 있으면 읽음 / 설정에 「신청번호」를 적으면 신청번호를 TMS NO 로 / 글의 「TMS NO : …」', () => {
+  assert.deepEqual(seaRecs.map(r => r.fields.tms), ['', '', '']);
+  const head = ['TMS NO', '신청번호', 'PO LIST', 'HBLNO', '입항일'];
+  const g = [head, ['T2610-0001', 'EXM1', 'O261000001', 'EXHB0001', '2026-10-01']];
+  assert.equal(L.anRecordsFromGrid(g, 't', L.defaultSettings())[0].f.tms, 'T2610-0001');
+  const st = Object.assign(L.defaultSettings(), { an_tms_labels: '신청번호' });
+  const r2 = L.anRecordsFromGrid([head.slice(1), g[1].slice(1)], 't', st)[0].f;
+  assert.deepEqual([r2.tms, r2.req_no], ['EXM1', 'EXM1']);
+  const t = L.parseArrivalNotice({ subject: '', body: 'HBL NO : EXHB0009\nTMS NO : T2610-0099\nETA : 2026-10-05' }, L.emptyDb(), {});
+  assert.equal(t.fields.tms, 'T2610-0099');
+  assert.deepEqual(L.anTmsLabels({ an_tms_labels: 'TMS NO，운송관리번호' }), ['TMS NO', '운송관리번호']);
+});
+test('항차등록은 B/L 별: PO 6개 B/L 은 한 줄(PO 목록), 대장 PO 연결 유지, TMS NO·B/L 이 내보내기에', () => {
+  const d = anDb(); d.settings.an_tms_labels = '신청번호';
+  const recs = L.anParseAll(seaMail, d, { file: 'sea', now: 'N' }, { grids: [{ name: '첨부 엑셀', rows: S.anSeaGrid(RT) }] });
+  L.anAddMails(d, recs);
+  let q = L.anQueue(d);
+  const mailRows = q.rows.filter(r => r.source === 'mail');                  // 예시 대장의 손 기록(GMAO…) 한 줄은 빼고
+  assert.deepEqual(mailRows.map(r => [r.key, r.pos.length, r.containers.length]), [['EXSH261001', 1, 0], ['EXSH261002', 3, 1], ['EXZB261003', 6, 4]]);
+  const r2 = mailRows[1];
+  assert.deepEqual([r2.po_no, r2.via, r2.ledger.map(x => x.po_no), r2.unknownPos, r2.tms], ['EX4500010007, O261000002, O261000003', 'PO 번호', ['EX4500010007'], ['O261000002', 'O261000003'], 'EXM2610A0002']);
+  assert.equal(L.anSyncToPos(d), 2);                                          // 대장에 있는 06·07 두 PO 에 B/L·ETA
+  assert.equal(d.pos.find(p => p.po_no === 'EX4500010007').bl_no, 'EXSH261002');
+  L.anRegister(d, [mailRows[2]], '2026-09-29', 'T1');
+  q = L.anQueue(d);
+  assert.deepEqual([q.pending.length, q.done.length, q.done[0].bl], [3, 1, 'EXZB261003']);
+  assert.deepEqual(Object.keys(d.an.regs), ['EXZB261003']);
+  assert.equal(d.an.regs.EXZB261003.pos.length, 6);
+  assert.equal(L.anRegDateOf(d, 'O261000009'), '2026-09-29');
+  const x = L.anQueueRows(q.done, d)[0];
+  assert.deepEqual([x['B/L(HBL)'], x['MBL'], x['TMS NO'], x['PO 수'], x['컨테이너 수'], x['Local AR 통화'], x['Local AR 금액'], x['상태']],
+    ['EXZB261003', 'EXMB0000000003', 'EXM2610A0003', 6, 4, 'USD', 3210, '등록 완료']);
+  assert.equal(L.anHistoryRows(d)[0]['TMS NO'], 'EXM2610A0003');
+  assert.equal(L.anMailRows(d)[2]['PO 수'], 6);
+});
+test('B/L 열쇠: HBL 이 없으면 MBL, MBL 만 적힌 A/N 뒤에 HBL+MBL A/N 이 오면 한 건, HBL 이 다르면 MBL 이 같아도 다른 건', () => {
+  const mk = (body, t) => L.parseArrivalNotice({ subject: '', body, dateTime: t }, L.emptyDb(), {});
+  const a = mk('MBL NO : EXMB0000000077\nETA : 2026-10-01', '2026-09-01T00:00:00Z');
+  const b = mk('HBL NO : EXHB0000000071\nMBL NO : EXMB0000000077\nETA : 2026-10-03', '2026-09-02T00:00:00Z');
+  const c = mk('HBL NO : EXHB0000000072\nMBL NO : EXMB0000000077\nETA : 2026-10-03', '2026-09-03T00:00:00Z');
+  assert.deepEqual([a.fields.bl, a.blIsMaster], ['EXMB0000000077', true]);
+  const g = L.anGroups([a, b, c]);
+  assert.deepEqual(g.map(x => [x.key, x.recs.length]), [['EXHB0000000071', 2], ['EXHB0000000072', 1]]);
+  assert.deepEqual(g[0].etaChanges.map(e => e.from + '>' + e.to), ['2026-10-01>2026-10-03']);
+});
+test('예전(PO|B/L 별) 등록 표시 → B/L 별로 옮김(먼저 등록한 날, PO 모음) — 두 번 돌려도 같음', () => {
+  const d = L.emptyDb();
+  d.an.regs = { 'EX1|EXHB1': { date: '2026-09-20', eta: '2026-10-01', at: 'a' }, 'EX2|EXHB1': { date: '2026-09-18', eta: '2026-10-02', at: 'b' }, 'EXHB2': { date: '2026-09-25', eta: '', pos: ['EX3'] } };
+  assert.equal(L.anMigrateRegs(d), 2);
+  assert.deepEqual(d.an.regs.EXHB1, { date: '2026-09-18', eta: '2026-10-02', at: 'a', pos: ['EX1', 'EX2'] });
+  assert.equal(L.anMigrateRegs(d), 0);
+  assert.equal(L.anRegDateOf(d, 'EX2'), '2026-09-18');
+});
+test('붙여넣은 표(탭으로 나뉜 칸) → 본문 표와 같이 읽음, 해상·항공 구분은 비어도 됨', () => {
+  const txt = ['신청번호\tPO LIST\tHBLNO\t입항일', 'EXM9\tO261000001O261000002\tEXHB0009\t2026-10-09'].join('\n');
+  const r = L.anParseAll(L.anMailFromText(txt), L.emptyDb(), { now: 'N' }, {});
+  assert.deepEqual([r.length, r[0].fields.bl, r[0].fields.pos, r[0].fields.eta], [1, 'EXHB0009', 'O261000001, O261000002', '2026-10-09']);
 });
 
 console.log('\n' + passed + '개 통과' + (process.exitCode ? ' — 실패 있음' : ''));

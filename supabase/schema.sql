@@ -15,8 +15,8 @@
 --    mail_template    상황별 영문 메일 문안 5종 (제목·본문)
 --    supplier         업체 마스터 (Contact List)
 --    purchase_order   PO 관리 대장 (송부 · OC · EXW · ETD · A/N · 선적서류)
---    arrival_notice   포워더 도착 통지(A/N) 메일에서 읽은 값 (2026-09-29 저녁 추가)
---    voyage_registration  항차등록 완료 표시 — PO × B/L 한 줄
+--    arrival_notice   포워더 도착 통지(A/N)에서 읽은 값 — B/L 한 건 = 한 줄 (2026-09-29 저녁 추가, 밤: 실물 양식 칸 추가)
+--    voyage_registration  항차등록 완료 표시 — B/L 한 줄(HBL, 없으면 MBL), 그 B/L 의 PO 는 po_nos (2026-09-29 밤: PO × B/L → B/L)
 --    voyage_history   항차등록 완료 · 취소 · 조정 ETA 반영 이력 (기록성 — 읽기·쓰기만, 고치기·지우기 없음)
 --
 --  권한 원칙 : 모든 행은 만든 사람(owner_id = auth.uid())만 보고 고칩니다.
@@ -192,6 +192,54 @@ create table if not exists public.voyage_history (
   eta            date
 );
 create index if not exists voyage_history_po_idx on public.voyage_history (owner_id, po_no, at);
+
+-- 2026-09-29 밤 — 실물 「도착일정통지」 양식(해상 본문 표·엑셀·B/L PDF, 항공 메일) 반영
+--  · A/N 한 줄 = B/L 한 건. 메일 한 통에 B/L 이 여럿이면 여러 줄이고, mail_key 끝에 B/L 열쇠가 붙는다.
+--  · TMS NO 는 받은 실물에 칸이 없어 어느 값인지 확인 중 — 도구가 설정의 칸 이름으로 찾은 값을 그대로 둔다.
+alter table public.arrival_notice add column if not exists tms_no          text not null default '';
+alter table public.arrival_notice add column if not exists req_no          text not null default '';   -- 신청번호(HKM… 모양)
+alter table public.arrival_notice add column if not exists shipper         text not null default '';
+alter table public.arrival_notice add column if not exists incoterms       text not null default '';
+alter table public.arrival_notice add column if not exists local_ar        text not null default '';   -- 원문 그대로 'USD : 987.65' 모양
+alter table public.arrival_notice add column if not exists local_ar_ccy    text not null default '';
+alter table public.arrival_notice add column if not exists local_ar_amount numeric(14, 2);
+alter table public.arrival_notice add column if not exists cargo_type      text not null default '';   -- 화물형태 'LCL'·'F40'
+alter table public.arrival_notice add column if not exists transport_mode  text not null default '';   -- '해상'·'항공'·'' — 참고용, 필수 아님
+create index if not exists arrival_notice_tms_idx on public.arrival_notice (owner_id, tms_no);
+
+--  · 항차등록은 B/L 별(요청: 「메일에 기재된 B/L 건에 대한 항차 등록 여부 관리」). 열쇠 = bl_key.
+alter table public.voyage_registration add column if not exists po_nos text not null default '';   -- 그 B/L 의 PO, 쉼표로
+alter table public.voyage_registration add column if not exists tms_no text not null default '';
+alter table public.voyage_registration alter column po_no set default '';
+alter table public.voyage_registration drop constraint if exists voyage_registration_po_no_check;
+-- 예전 판(PO × B/L 한 줄)으로 쌓인 줄은 B/L 하나로 합친다: 가장 이른 등록일 줄을 남기고 PO 를 po_nos 로 모은다.
+-- 예전 제약이 있을 때만 돈다 — 두 번째 실행부터는 아무것도 하지 않는다.
+do $mig$
+begin
+  if exists (select 1 from pg_constraint where conname = 'voyage_registration_uniq' and conrelid = 'public.voyage_registration'::regclass) then
+    with g as (
+      select owner_id, bl_key, (array_agg(id order by registered_on, id))[1] as keep_id,
+             string_agg(distinct nullif(trim(po_no), ''), ', ' order by nullif(trim(po_no), '')) as pos
+      from public.voyage_registration group by owner_id, bl_key
+    ), u as (
+      update public.voyage_registration v set po_nos = coalesce(g.pos, '') from g where v.id = g.keep_id returning v.id
+    )
+    delete from public.voyage_registration v using g
+     where v.owner_id = g.owner_id and v.bl_key = g.bl_key and v.id <> g.keep_id;
+    alter table public.voyage_registration drop constraint voyage_registration_uniq;
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'voyage_registration_bl_uniq' and conrelid = 'public.voyage_registration'::regclass) then
+    -- upsert onConflict = 'owner_id,bl_key'
+    alter table public.voyage_registration add constraint voyage_registration_bl_uniq unique (owner_id, bl_key);
+  end if;
+end;
+$mig$;
+
+-- 이력도 B/L 별: PO 가 대장에 없는 B/L 도 남기므로 po_no 는 비어도 되고(여럿이면 쉼표), TMS NO 를 함께 둔다.
+alter table public.voyage_history add column if not exists tms_no text not null default '';
+alter table public.voyage_history alter column po_no set default '';
+alter table public.voyage_history drop constraint if exists voyage_history_po_no_check;
+create index if not exists voyage_history_bl_idx on public.voyage_history (owner_id, bl_no, at);
 
 -- ----------------------------------------------------------------------------
 -- 2. 함수 · 트리거

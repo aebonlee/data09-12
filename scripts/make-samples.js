@@ -84,3 +84,19 @@ console.log(fs.readdirSync(OUT).join('\n'));
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(S.cumPrevGrid().grid), 'wk37 분석(예시)');
   fs.writeFileSync(path.join(OUT, '예시데이터_Integrated_Order_Status_wk37_분석.xlsx'), XLSX.write(wb, { bookType: 'xlsx', type: 'buffer' }));
 }
+
+// ── 2026-09-29 밤: 실물 「도착일정통지」 양식을 본뜬 A/N 예시(구조만 같고 값은 모두 지어낸 것) ──
+// 해상: 본문 표 메일 + 같은 내용의 엑셀(.xls, 31칸) + House B/L 사본 PDF(4쪽) / 항공: ks_c_5601-1987 메일 + HAWB PDF 2개
+{
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(S.anSeaGrid(BASE)), 'Sheet1');
+  const xls = Buffer.from(XLSX.write(wb, { bookType: 'biff8', type: 'array' }));
+  const pdf = Buffer.from(L.makeSimplePdf(S.anSeaPdfPages(BASE)));
+  fs.writeFileSync(path.join(OUT, '예시데이터_AN_부산_해상.xls'), xls);
+  fs.writeFileSync(path.join(OUT, '예시데이터_AN_부산_해상.pdf'), pdf);
+  fs.writeFileSync(path.join(OUT, '예시데이터_AN5_도착일정통지_해상.eml'), S.anSeaMail(BASE, [
+    { name: '예시_AN_부산.xls', type: 'application/vnd.ms-excel', b64: xls.toString('base64') },
+    { name: '예시_AN_부산.pdf', type: 'application/pdf', b64: pdf.toString('base64') }]));
+  const airAtts = S.AN_AIR.map(a => ({ name: a.hawb + '.pdf', b64: Buffer.from(L.makeSimplePdf(S.anAirPdfPages(BASE, a))).toString('base64') }));
+  fs.writeFileSync(path.join(OUT, '예시데이터_AN6_도착일정통지_항공.eml'), S.anAirMail(BASE, airAtts));
+}
