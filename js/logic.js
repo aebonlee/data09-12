@@ -25,6 +25,11 @@
       an_cmp_incoterms: false, // 메일 표와 B/L 사본의 Incoterms 가 다를 때 참고 표시(2026-09-30 확정: 비교 불필요 — 기본 끔)
       cum_gubun: 'HCE',        // Cummins EXW 에서 볼 구분 값(2026-09-30 요청 「구분 HCE 만 조회」)
       cum_gubun_only: true,    // 켜 두면 그 구분만 봅니다(기본). 끄면 전체 구분
+      // 원산지증명서 소급문구(2026-09-30): B/L DATE 에서 기준일까지 이 일수 이상이면 「소급문구 필요」. 문구·문장은 비우면 js/co.js 의 기본값
+      co_retro_days: 7,
+      co_retro_basis: 'today', // 발급(예정)일을 적지 않았을 때 기준일: today(오늘) · requested(요청 받은 날)
+      co_retro_phrase: '',     // C/O 에 적을 문구(기본 ISSUED RETROSPECTIVELY — 협정별 정확한 문구는 통관팀 확인)
+      co_retro_line: '',       // 메일에 넣을 소급 발급 요청 문장
       sender_name: '',
       sender_email: '',
       sender_company: '',
@@ -68,7 +73,7 @@
       // 2026-09-30 요청: 통관팀이 요청한 원산지증명서를 업체에 요청하는 메일(일반적인 영문 예시 — 실제 사내 문안을 받으면 설정에서 바꿉니다)
       co_request: {
         subject: '[Request] Certificate of Origin - {REF}',
-        body: 'Dear {CONTACT},\n\nFor customs clearance of the shipment below, could you please send us the Certificate of Origin ({CO_TYPE})?\n\n{CO_LIST}\n\nWe would appreciate it if you could send it by {DUE}.\nPlease make sure that the invoice number, item description and quantity on the certificate match the commercial invoice.\n\nBest regards,\n{SENDER}\n{DEPT}\n{COMPANY}'
+        body: 'Dear {CONTACT},\n\nFor customs clearance of the shipment below, could you please send us the Certificate of Origin ({CO_TYPE})?\n\n{CO_LIST}\n\n{RETRO}\n\nWe would appreciate it if you could send it by {DUE}.\nPlease make sure that the invoice number, item description and quantity on the certificate match the commercial invoice.\n\nBest regards,\n{SENDER}\n{DEPT}\n{COMPANY}'
       }
     };
   }

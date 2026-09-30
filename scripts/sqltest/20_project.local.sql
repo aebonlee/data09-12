@@ -373,6 +373,19 @@ begin
     'anon 에 표 권한이 남지 않았다 (Supabase 자동 부여를 끊었다)' || coalesce(' (발견: ' || v_bad || ')', ''));
 end $t$;
 
+-- 2026-09-30 (2) 원산지증명서 소급문구 칸: B/L DATE·발급(예정)일은 date, 기준 일수 기본 7 · 1 이상, 기준 today · requested
+do $t$
+begin
+  perform public._assert(exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'co_request' and column_name = 'bl_date' and data_type = 'date')
+    and exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'co_request' and column_name = 'issue_date' and data_type = 'date'),
+    'co_request.bl_date · issue_date 는 date 칸이다');
+  perform public._assert((select column_default from information_schema.columns where table_schema = 'public' and table_name = 'workspace' and column_name = 'co_retro_days') = '7',
+    'workspace.co_retro_days 기본값은 7 이다');
+  perform public._assert(exists (select 1 from pg_constraint where conrelid = 'public.workspace'::regclass and pg_get_constraintdef(oid) like '%co_retro_days >= 1%')
+    and exists (select 1 from pg_constraint where conrelid = 'public.workspace'::regclass and pg_get_constraintdef(oid) like '%co_retro_basis%today%requested%'),
+    'co_retro_days 는 1 이상 · co_retro_basis 는 today · requested 만');
+end $t$;
+
 -- 정리 (슈퍼유저로 — 이력도 지운다)
 delete from public.co_request_history;
 delete from public.co_request;

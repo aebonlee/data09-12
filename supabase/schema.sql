@@ -352,6 +352,16 @@ create index if not exists co_request_history_idx on public.co_request_history (
 --  엉뚱한 스키마의 객체를 잡을 수 있다.
 -- ----------------------------------------------------------------------------
 
+-- 2026-09-30 (2) — 원산지증명서 소급문구: 「B/L DATE 선적일 기준 7일 이상 지난 건에 대해 소급문구 적용 필요」
+--   경과일 = 기준일(발급(예정)일 → 수령일 → 설정 기준) − B/L DATE, 기준 일수 이상이면 「소급문구 필요」(js/co.js coRetro)
+alter table public.co_request add column if not exists bl_date    date;   -- B/L DATE(선적일) — A/N 의 ETD(On Board) 등에서 채움
+alter table public.co_request add column if not exists issue_date date;   -- C/O 발급(예정)일 — 소급 판정 기준일(비우면 설정 기준)
+alter table public.workspace add column if not exists co_retro_days   int  not null default 7 check (co_retro_days >= 1);
+alter table public.workspace add column if not exists co_retro_basis  text not null default 'today' check (co_retro_basis in ('today', 'requested'));
+alter table public.workspace add column if not exists co_retro_phrase text not null default '';   -- 비우면 ISSUED RETROSPECTIVELY(통관팀 확인 전 임시값)
+alter table public.workspace add column if not exists co_retro_line   text not null default '';   -- 메일에 넣을 소급 발급 요청 문장(비우면 기본 문장)
+alter table public.invoice_doc add column if not exists bl_date date;     -- Invoice 에 적힌 B/L DATE(있을 때)
+
 create or replace function public.set_updated_at()
 returns trigger language plpgsql set search_path = public as $fn$
 begin

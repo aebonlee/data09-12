@@ -439,6 +439,33 @@
       App.save(); App.toast('설정을 저장했습니다.');
     } }, '설정 저장')));
 
+    // 원산지증명서 소급문구(2026-09-30 요청 「B/L DATE 선적일 기준 7일 이상 지난 건에 대해 소급문구 적용 필요」) — data09-12 · data09-28 같은 칸
+    (function () {
+      var C = root.OMCo, rs = C.retroSettings(st);
+      var rDays = h('input', { type: 'number', min: 1, step: 1, value: rs.days });
+      var rBasis = h('select', null, C.RETRO_BASIS.map(function (b) { return h('option', { value: b.key }, b.label); }));
+      rBasis.value = rs.basis;
+      var rPhrase = h('input', { type: 'text', value: rs.phrase });
+      var rLine = h('textarea', { rows: 4 }); rLine.value = rs.line;
+      main.appendChild(h('div', { class: 'card', id: 'co-retro' }, h('h2', null, '원산지증명서 — 소급문구(B/L DATE)'),
+        h('p', { class: 'note' }, 'B/L DATE(선적일)에서 기준일까지 아래 일수 이상 지난 요청에 「소급문구 필요 (Issued Retrospectively)」를 붙이고, 업체 메일 초안에 소급 발급을 부탁하는 문장을 자동으로 넣습니다. 기준일은 요청에 적은 「C/O 발급(예정)일」이 먼저, C/O 를 이미 받은 건은 수령일, 둘 다 없으면 아래에서 고른 날입니다. 협정(FTA)마다 정확한 문구가 다를 수 있어 문구는 단정하지 않고 여기서 바꾸게 두었습니다 — 통관팀이 쓰는 문구로 맞춰 주세요.'),
+        h('div', { class: 'form-grid' },
+          App.field('기준 일수', rDays, '이 일수 이상이면 「소급문구 필요」(기본 7 — 6일은 아니고 7일부터)'),
+          App.field('기준일(발급일을 적지 않았을 때)', rBasis, '기본 「오늘」'),
+          h('div', { class: 'span-all' }, App.field('C/O 에 적을 소급 문구', rPhrase, '기본 ' + C.RETRO_DEFAULT.phrase + ' — 통관팀 확인 전 임시값입니다')),
+          h('div', { class: 'span-all' }, App.field('메일에 넣을 소급 발급 요청 문장(영문)', rLine, '빈칸: {RETRO_REFS}(해당 건) {RETRO_BL_DATES}(B/L DATE) {RETRO_DAYS}(기준 일수) {RETRO_PHRASE}(위 문구). 메일 문안의 {RETRO} 자리에 들어가고, 문안에 {RETRO} 가 없으면 대상 목록 바로 뒤에 들어갑니다.'))),
+        h('div', { class: 'btn-row' },
+          h('button', { type: 'button', class: 'btn btn-primary', onclick: function () {
+            var n = parseInt(rDays.value, 10);
+            if (!(n >= 1)) { App.toast('기준 일수는 1 이상으로 적어 주세요.', true); return; }
+            st.co_retro_days = n; st.co_retro_basis = rBasis.value;
+            st.co_retro_phrase = rPhrase.value.trim() === C.RETRO_DEFAULT.phrase ? '' : rPhrase.value.trim();
+            st.co_retro_line = rLine.value.trim() === C.RETRO_DEFAULT.line ? '' : rLine.value.trim();
+            App.save(); App.toast('소급문구 설정을 저장했습니다.');
+          } }, '저장'),
+          h('button', { type: 'button', class: 'btn', onclick: function () { rDays.value = C.RETRO_DEFAULT.days; rBasis.value = C.RETRO_DEFAULT.basis; rPhrase.value = C.RETRO_DEFAULT.phrase; rLine.value = C.RETRO_DEFAULT.line; } }, '기본값으로'))));
+    })();
+
     // 메일 템플릿
     var tcard = h('div', { class: 'card' }, h('h2', null, '메일 템플릿'),
       h('p', { class: 'note' }, '빈칸: {PO} {PO_LIST} {SUPPLIER} {CODE}(업체 코드) {CONTACT} {EXW} {OC_DAYS} {CHECKLIST} {SENDER} {DEPT} {COMPANY}. 발주 메일은 받은 실제 메일의 제목·문안 구성을 따랐고, 나머지는 일반적인 영문 예시입니다.'));

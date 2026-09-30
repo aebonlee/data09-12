@@ -40,7 +40,7 @@
   function emptyCo() { return { reqs: [], history: [] }; }
   function ensure(db) { db.co = db.co && typeof db.co === 'object' ? db.co : emptyCo(); db.co.reqs = db.co.reqs || []; db.co.history = db.co.history || []; return db.co; }
 
-  var FIELDS = ['requested_on', 'requester', 'bl_no', 'invoice_no', 'po_no', 'supplier_code', 'co_type', 'due_date', 'note'];
+  var FIELDS = ['requested_on', 'requester', 'bl_no', 'invoice_no', 'po_no', 'supplier_code', 'co_type', 'due_date', 'note', 'bl_date', 'issue_date'];
   function clean(input) {
     var r = {};
     FIELDS.forEach(function (k) { r[k] = str(input && input[k]); });
@@ -64,7 +64,7 @@
     var r = byId(db, id);
     if (!r) return false;
     var c = clean(Object.assign({}, r, patch)), changed = [];
-    FIELDS.forEach(function (k) { if (patch && k in patch && c[k] !== r[k]) { changed.push(k); r[k] = c[k]; } });
+    FIELDS.forEach(function (k) { if (patch && k in patch && c[k] !== str(r[k])) { changed.push(k); r[k] = c[k]; } });
     if (changed.length) ensure(db).history.push({ at: now, id: id, action: 'edit', from: r.status, to: r.status, date: '', ref: refText(r), note: '고친 칸: ' + changed.join(', ') });
     return changed.length > 0;
   }
@@ -85,8 +85,10 @@
     return [r.invoice_no ? 'Invoice ' + r.invoice_no : '', r.bl_no ? 'B/L ' + r.bl_no : '', r.po_no ? 'PO ' + r.po_no : ''].filter(Boolean).join(' · ');
   }
   // 기한 판정: 끝나지 않았는데 기한이 지났으면 「기한 지남」, 3일 안이면 「기한 임박」, 요청 후 2일 넘게 업체에 안 보냈으면 「미발송」
-  function coFlags(r, today) {
+  // 소급문구: B/L DATE 에서 기준일까지 설정 일수(기본 7일) 이상이면 「소급문구 필요」(취소 건 빼고 끝난 건에도 — C/O 에 문구가 들어갔는지 확인용). st = db.settings
+  function coFlags(r, today, st) {
     var out = [], t = dayNum(today), due = dayNum(r.due_date), req = dayNum(r.requested_on);
+    if (r.status !== 'cancelled') { var rt = coRetro(r, today, st); if (rt.need) out.push({ code: 'retro', label: '소급문구 필요 ' + rt.days + '일', level: 'danger', detail: rt.detail }); }
     if (DONE[r.status]) return out;
     if (r.status !== 'received' && due != null && t != null) {
       if (due < t) out.push({ code: 'overdue', label: '기한 지남 ' + (t - due) + '일', level: 'danger' });
@@ -101,7 +103,7 @@
   // 번호 하나만 적어도 업체·PO·B/L 을 채워 줍니다. L = OMLogic, I = OMInvoice(없어도 됨)
   //   PO → 대장의 업체 · B/L → A/N(항차등록 대기 목록)의 PO → 업체 · Invoice → 올린 Invoice 의 PO·공급사, 또는 A/N 의 Invoice 번호
   function coSuggest(db, input, L, I) {
-    var out = { supplier_code: '', po_no: '', bl_no: '', invoice_no: '', via: [] };
+    var out = { supplier_code: '', po_no: '', bl_no: '', bl_date: '', invoice_no: '', via: [] };
     var pos = [], q = L && L.anQueue ? L.anQueue(db) : { rows: [] };
     function addPo(no, via) { no = str(no).toUpperCase(); if (no && pos.indexOf(no) < 0) { pos.push(no); if (via && out.via.indexOf(via) < 0) out.via.push(via); } }
     str(input.po_no).toUpperCase().split(/[\s,;]+/).forEach(function (x) { addPo(x); });
@@ -124,8 +126,74 @@
       if (p && !out.supplier_code && p.supplier_code) { out.supplier_code = p.supplier_code; out.via.push('대장 PO ' + no + ' 의 업체'); }
       if (p && !out.bl_no && !bl && p.bl_no) { out.bl_no = p.bl_no; out.via.push('대장 PO 의 B/L'); }
     });
+    // B/L DATE(선적일, 소급문구 판정용): ① A/N 의 ETD(B/L 사본의 On Board 날짜를 읽은 값 포함) → ② 읽은 Invoice 에 적힌 B/L DATE
+    //   → ③ 대장 PO 의 「선적 예정일(ETD)」(예정일일 수 있어 근거에 「확인」을 붙임)
+    out.bl_date = '';
+    var fb = bl || keyOf(out.bl_no);
+    if (fb) { var ar = q.rows.filter(function (r) { return r.key === fb || keyOf(r.mbl) === fb; })[0]; if (ar && dayNum(ar.etd) != null) { out.bl_date = ar.etd; out.via.push('A/N 의 ETD(On Board) → B/L DATE'); } }
+    if (!out.bl_date && inv) (db.invoices || []).forEach(function (d) { if (!out.bl_date && keyOf(d.header && d.header.invoiceNo) === inv && dayNum(d.header.blDate) != null) { out.bl_date = d.header.blDate; out.via.push('Invoice 에 적힌 B/L DATE'); } });
+    if (!out.bl_date) pos.some(function (no) {
+      var p = (db.pos || []).filter(function (x) { return str(x.po_no).toUpperCase() === no; })[0];
+      if (p && dayNum(p.etd) != null) { out.bl_date = p.etd; out.via.push('대장 PO ' + no + ' 의 선적 예정일(ETD) — 실제 B/L DATE 와 같은지 확인'); return true; }
+      return false;
+    });
     out.po_no = pos.join(', ');
     return out;
+  }
+
+  /* ── B/L DATE 소급문구 (2026-09-30 요청 「B/L DATE 선적일 기준 7일 이상 지난 건에 대해 소급문구 적용 필요」) ──
+     data09-12(외부망)와 data09-28(폐쇄망)의 js/co.js 에 같은 코드로 둡니다(한쪽을 고치면 다른 쪽도).
+     경과일 = 기준일 − B/L DATE(선적일). 기준일은 이 순서로 고릅니다(화면·엑셀에 어느 날짜를 썼는지 함께 적음):
+       ① 요청에 적은 「C/O 발급(예정)일」 → ② C/O 를 이미 받은 건이면 「C/O 수령일」 → ③ 설정의 기준(「오늘」 기본 · 「요청 받은 날」)
+     경과일이 기준 일수(설정, 기본 7) 이상이면 「소급문구 필요」 — 6일은 아님, 7일부터 필요.
+     실제 문구는 협정(FTA)마다 다를 수 있어 단정하지 않고 설정으로 둡니다(기본 「ISSUED RETROSPECTIVELY」 — 통관팀 확인 필요).
+     업체 메일에는 소급 발급을 부탁하는 문장(설정에서 고칠 수 있음)을 자동으로 넣습니다. */
+  var RETRO_DEFAULT = {
+    days: 7, basis: 'today', phrase: 'ISSUED RETROSPECTIVELY',
+    line: 'Please note that the B/L date of {RETRO_REFS} is {RETRO_BL_DATES}, which is {RETRO_DAYS} or more days before the issue date of the certificate. Could you please issue the certificate retrospectively and mark it "{RETRO_PHRASE}"?'
+  };
+  var RETRO_BASIS = [{ key: 'today', label: '오늘' }, { key: 'requested', label: '요청 받은 날' }];
+  var RETRO_BASIS_LABEL = { issue: 'C/O 발급(예정)일', received: 'C/O 수령일', requested: '요청 받은 날', today: '오늘' };
+  var RETRO_NEED_LABEL = '소급문구 필요 (Issued Retrospectively)';
+  function retroSettings(st) {
+    st = st || {};
+    var d = parseInt(str(st.co_retro_days), 10);
+    return {
+      days: isFinite(d) && d >= 1 ? d : RETRO_DEFAULT.days,
+      basis: str(st.co_retro_basis) === 'requested' ? 'requested' : 'today',
+      phrase: str(st.co_retro_phrase) || RETRO_DEFAULT.phrase,
+      line: str(st.co_retro_line) || RETRO_DEFAULT.line
+    };
+  }
+  function localToday() { var d = new Date(); function p(n) { return (n < 10 ? '0' : '') + n; } return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()); }
+  // 한 요청의 판정 → { blDate, refDate, basis, basisLabel, threshold, days, known, need, label, detail }
+  function coRetro(r, today, st) {
+    var s = retroSettings(st), basis, ref;
+    if (dayNum(r.issue_date) != null) { basis = 'issue'; ref = r.issue_date; }
+    else if ((r.status === 'received' || r.status === 'forwarded') && dayNum(r.received_on) != null) { basis = 'received'; ref = r.received_on; }
+    else if (s.basis === 'requested' && dayNum(r.requested_on) != null) { basis = 'requested'; ref = r.requested_on; }
+    else { basis = 'today'; ref = str(today); }
+    var out = { blDate: str(r.bl_date), refDate: ref, basis: basis, basisLabel: RETRO_BASIS_LABEL[basis], threshold: s.days, days: null, known: false, need: false, label: '', detail: '' };
+    var b = dayNum(r.bl_date), t = dayNum(ref);
+    if (b == null || t == null) { out.label = str(r.bl_date) ? 'B/L DATE 형식 확인(YYYY-MM-DD)' : 'B/L DATE 없음'; return out; }
+    out.known = true; out.days = t - b; out.need = out.days >= s.days;
+    out.label = out.need ? RETRO_NEED_LABEL : out.days < 0 ? 'B/L DATE 가 기준일보다 뒤' : '소급 불필요';
+    out.detail = 'B/L DATE ' + out.blDate + ' → 기준일 ' + ref + '(' + out.basisLabel + ') ' + out.days + '일 경과 · 기준 ' + s.days + '일 이상이면 소급문구';
+    return out;
+  }
+  function shortRef(r) { return r.invoice_no ? 'Invoice ' + r.invoice_no : r.bl_no ? 'B/L ' + r.bl_no : 'PO ' + r.po_no; }
+  // 업체 메일에 넣을 소급 발급 요청 문장(해당 건이 없으면 빈 글)
+  function retroLine(reqs, today, st) {
+    var s = retroSettings(st), hit = (reqs || []).filter(function (r) { return r && r.status !== 'cancelled' && coRetro(r, today, st).need; });
+    if (!hit.length) return { text: '', reqs: [] };
+    var v = { RETRO_REFS: hit.map(shortRef).join(', '), RETRO_BL_DATES: hit.map(function (r) { return enDate(r.bl_date); }).join(' / '), RETRO_DAYS: s.days, RETRO_PHRASE: s.phrase };
+    return { text: fill(s.line, v), reqs: hit };
+  }
+  // 문안에 {RETRO} 빈칸이 없으면(예전에 저장한 문안) 대상 목록 바로 뒤에 넣습니다
+  function withRetroSlot(body) {
+    body = str(body);
+    if (body.indexOf('{RETRO}') >= 0) return body;
+    return body.indexOf('{CO_LIST}') >= 0 ? body.replace('{CO_LIST}', '{CO_LIST}\n\n{RETRO}') : body + '\n\n{RETRO}';
   }
 
   var MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -142,7 +210,7 @@
     reqs.forEach(function (r) { var e = typeEn(r.co_type); if (types.indexOf(e) < 0) types.push(e); if (r.due_date) dues.push(r.due_date); });
     dues.sort();
     var list = reqs.map(function (r) {
-      return '- ' + [r.invoice_no ? 'Invoice No: ' + r.invoice_no : '', r.bl_no ? 'B/L No: ' + r.bl_no : '', r.po_no ? 'PO No: ' + r.po_no : '', reqs.length > 1 || types.length > 1 ? 'Type: ' + typeEn(r.co_type) : ''].filter(Boolean).join(' / ');
+      return '- ' + [r.invoice_no ? 'Invoice No: ' + r.invoice_no : '', r.bl_no ? 'B/L No: ' + r.bl_no : '', dayNum(r.bl_date) != null ? 'B/L Date: ' + enDate(r.bl_date) : '', r.po_no ? 'PO No: ' + r.po_no : '', reqs.length > 1 || types.length > 1 ? 'Type: ' + typeEn(r.co_type) : ''].filter(Boolean).join(' / ');
     }).join('\n');
     var first = reqs[0] || {};
     var ref = first.invoice_no ? 'Invoice ' + first.invoice_no : first.bl_no ? 'B/L ' + first.bl_no : 'PO ' + first.po_no;
@@ -152,14 +220,19 @@
       SUPPLIER: supplier ? supplier.name : '', CONTACT: (supplier && supplier.contact) || 'Sir or Madam', CODE: supplier ? supplier.code : '',
       SENDER: st.sender_name || '', DEPT: st.sender_dept || '', COMPANY: st.sender_company || ''
     };
-    var body = fill(t.body, v).replace(/by your earliest convenience/, 'at your earliest convenience');
+    // 소급문구: B/L DATE 에서 기준일까지 설정 일수 이상인 건이 있으면 소급 발급 요청 문장({RETRO})을 넣습니다. opts.today = 기준 「오늘」(없으면 이 PC 날짜)
+    var today = opts.today || localToday(), rl = retroLine(reqs, today, st);
+    v.RETRO = rl.text;
+    var body = fill(rl.text ? withRetroSlot(t.body) : t.body, v).replace(/by your earliest convenience/, 'at your earliest convenience');
     var noteKo = '[국문 요약] ' + (supplier ? supplier.name : '업체') + '에 원산지증명서(' + reqs.map(function (r) { return r.co_type || 'C/O'; }).filter(function (x, i, a) { return a.indexOf(x) === i; }).join(', ') + ')를 요청합니다. ' +
       '대상: ' + reqs.map(refText).join(' / ') + '. ' + (dues.length ? '기한 ' + dues[0] + '까지 보내 달라고 적었습니다. ' : '기한은 적지 않았습니다. ') +
       'C/O 의 Invoice 번호·품명·수량이 Commercial Invoice 와 같은지 확인해 달라는 문장이 들어 있습니다.';
+    if (rl.reqs.length) noteKo += ' 소급문구 필요(B/L DATE 에서 ' + retroSettings(st).days + '일 이상): ' + rl.reqs.map(function (r) { var x = coRetro(r, today, st); return shortRef(r) + ' — ' + x.detail.replace(/ · 기준.*$/, ''); }).join(' / ') +
+      '. 소급 발급과 「' + retroSettings(st).phrase + '」 표기를 부탁하는 문장을 넣었습니다(문구는 설정에서 바꿀 수 있음).';
     if (opts.includeKo) body += '\n\n----\n' + noteKo;
     var draft = {
       from: st.sender_email || '', to: supplier ? supplier.to : '', cc: supplier ? supplier.cc : '',
-      subject: fill(t.subject, v), body: body, noteKo: noteKo, attachments: [],
+      subject: fill(t.subject, v), body: body, noteKo: noteKo, retro: rl.reqs.map(function (r) { return r.id; }), attachments: [],
       fileName: ('CO요청_' + (supplier ? supplier.name : '업체미정') + '_' + reqs.map(function (r) { return r.invoice_no || r.bl_no || r.po_no; }).join('_')).replace(/[\\\/:*?"<>|\r\n]+/g, '_').slice(0, 120) + '.eml'
     };
     draft.mailto = mailtoUrl(draft);
@@ -181,11 +254,14 @@
   /* 엑셀 표 */
   function coRows(db, today, supplierName) {
     return ensure(db).reqs.map(function (r) {
+      var rt = coRetro(r, today, db.settings);
       return {
         '요청일': r.requested_on, '통관팀 담당': r.requester, 'Invoice 번호': r.invoice_no, 'B/L 번호': r.bl_no, 'PO 번호': r.po_no,
+        'B/L DATE(선적일)': r.bl_date || '', 'C/O 발급(예정)일': r.issue_date || '', '소급 기준일': rt.refDate, '기준일 구분': rt.basisLabel, '경과일': rt.known ? rt.days : '',
+        '소급문구': rt.need ? '필요' : rt.known ? '불필요' : rt.label,
         '업체 코드': r.supplier_code, '업체명': supplierName ? supplierName(r.supplier_code) : '', 'C/O 종류': r.co_type, '기한': r.due_date,
         '상태': statusLabel(r.status), '업체 요청일': r.sent_on, 'C/O 수령일': r.received_on, '통관팀 전달일': r.forwarded_on,
-        '확인': coFlags(r, today).map(function (f) { return f.label; }).join(', '), '메모': r.note
+        '확인': coFlags(r, today, db.settings).map(function (f) { return f.label; }).join(', '), '메모': r.note
       };
     });
   }
@@ -195,12 +271,13 @@
     });
   }
   function coCounts(db, today) {
-    var c = { total: 0, open: 0, overdue: 0, waiting: 0, toForward: 0 };
+    var c = { total: 0, open: 0, overdue: 0, waiting: 0, toForward: 0, retro: 0 };
     ensure(db).reqs.forEach(function (r) {
       c.total++;
+      if (r.status !== 'cancelled' && coRetro(r, today, db.settings).need) c.retro++;
       if (DONE[r.status]) return;
       c.open++;
-      if (coFlags(r, today).some(function (f) { return f.code === 'overdue'; })) c.overdue++;
+      if (coFlags(r, today, db.settings).some(function (f) { return f.code === 'overdue'; })) c.overdue++;
       if (r.status === 'sent') c.waiting++;
       if (r.status === 'received') c.toForward++;
     });
@@ -210,6 +287,7 @@
   return {
     STATUS: STATUS, TYPES: TYPES, statusLabel: statusLabel, typeEn: typeEn, emptyCo: emptyCo, coAdd: coAdd, coUpdate: coUpdate, coSetStatus: coSetStatus,
     coFlags: coFlags, coSuggest: coSuggest, coDraft: coDraft, mailtoUrl: mailtoUrl, isLongMailto: isLongMailto, enDate: enDate, refText: refText,
-    coRows: coRows, coHistoryRows: coHistoryRows, coCounts: coCounts, byId: byId
+    coRows: coRows, coHistoryRows: coHistoryRows, coCounts: coCounts, byId: byId,
+    coRetro: coRetro, retroSettings: retroSettings, retroLine: retroLine, RETRO_DEFAULT: RETRO_DEFAULT, RETRO_BASIS: RETRO_BASIS, RETRO_NEED_LABEL: RETRO_NEED_LABEL
   };
 });

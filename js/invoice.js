@@ -134,7 +134,9 @@
     supplier: ['supplier', 'seller', 'shipper / exporter', 'shipper/exporter', 'exporter', 'shipper', 'vendor', 'lieferant', 'beneficiary', 'from', '공급자', '수출자'],
     currency: ['currency', 'curr.', 'ccy', 'währung', '통화'],
     poNo: ['purchase order no', 'purchase order', 'p/o no', 'po no', 'p.o. no', 'po number', 'contract no', 'your order no', 'your order', 'order no', 'ihre bestellung', '발주 번호', '발주번호'],
-    blNo: ['b/l no', 'bl no', 'bill of lading no', 'awb no', 'hawb no', 'house b/l', 'b/l']
+    blNo: ['b/l no', 'bl no', 'bill of lading no', 'awb no', 'hawb no', 'house b/l', 'b/l'],
+    // 2026-09-30 원산지증명서 소급문구: Invoice 에 B/L DATE·선적일이 적혀 있으면 읽어 둡니다(없는 Invoice 가 많음 — A/N 의 ETD 가 먼저)
+    blDate: ['b/l date', 'bl date', 'date of b/l', 'shipped on board date', 'on board date', 'onboard date', 'date of shipment', 'shipment date', 'sailing date', '선적일']
   };
   function cleanLines(text) { return String(text || '').split(/\r?\n/).map(function (l) { return l.replace(/ /g, ' ').replace(/\s+$/, ''); }); }
   // 줄 안 라벨 → 값(같은 줄 뒤, 없으면 다음 줄). 값은 칸 사이(3칸 이상 공백·탭) 앞까지.
@@ -191,7 +193,7 @@
     opts = opts || {};
     var lines = cleanLines(text), findPo = poFinder(opts);
     var notes = [];
-    var h = { invoiceNo: '', date: '', dateAmbiguous: false, dateAlt: '', supplier: '', currency: '', poNo: '', incoterms: '', incotermsPlace: '', blNo: '' };
+    var h = { invoiceNo: '', date: '', dateAmbiguous: false, dateAlt: '', supplier: '', currency: '', poNo: '', incoterms: '', incotermsPlace: '', blNo: '', blDate: '' };
 
     var f = findLabel(lines, LABELS.invoiceNo);
     if (f) { var mi = /[A-Za-z0-9][A-Za-z0-9\-_\/.]{1,30}/.exec(f.value.replace(/^(no\.?|number|#)\s*/i, '')); if (mi && /\d/.test(mi[0])) h.invoiceNo = mi[0].replace(/[.]+$/, ''); }
@@ -223,7 +225,11 @@
     if (!inc) { inc = incotermIn(lines.filter(function (l) { return !numberCells(l).length || /incoterm|terms/i.test(l); }).join('\n')); if (inc) notes.push('Incoterms 라벨 없이 글에서 찾았습니다(' + inc.code + ')'); }
     if (inc) { h.incoterms = inc.code; h.incotermsPlace = inc.place; }
     f = findLabel(lines, LABELS.blNo);
-    if (f) { var mb = /[A-Z0-9][A-Z0-9\-]{5,24}/.exec(f.value.toUpperCase()); if (mb && /\d/.test(mb[0])) h.blNo = mb[0]; }
+    // 「B/L DATE: 20-SEP-2026」 줄의 날짜를 B/L 번호로 읽지 않게(2026-09-30)
+    if (f && !/^date\b/i.test(f.value)) { var mb = /[A-Z0-9][A-Z0-9\-]{5,24}/.exec(f.value.toUpperCase()); if (mb && /\d/.test(mb[0])) h.blNo = mb[0]; }
+    f = findLabel(lines, LABELS.blDate);
+    var bd = f && readDate(f.value);
+    if (bd) h.blDate = bd.iso;
 
     // PO: 헤더 라벨 → 그 줄의 PO 모양 번호가 우선, 없으면 라벨 값
     var poLabel = findLabel(lines, LABELS.poNo);
@@ -352,7 +358,7 @@
   }
 
   /* ── 반자동 AI(스캔본) ─────────────────────────────── */
-  var AI_SCHEMA = '{"invoice_no":"","invoice_date":"YYYY-MM-DD","supplier":"","currency":"","incoterms":"","incoterms_place":"","po_no":"","bl_no":"","sub_total":null,"total":null,"lines":[{"po_no":"","part_no":"","description":"","qty":0,"unit_price":0,"amount":0}]}';
+  var AI_SCHEMA = '{"invoice_no":"","invoice_date":"YYYY-MM-DD","supplier":"","currency":"","incoterms":"","incoterms_place":"","po_no":"","bl_no":"","bl_date":"YYYY-MM-DD","sub_total":null,"total":null,"lines":[{"po_no":"","part_no":"","description":"","qty":0,"unit_price":0,"amount":0}]}';
   function aiPrompt(fileName, extraText) {
     return [
       '첨부한 외자 부품 Invoice(' + (fileName || '파일') + ')에서 아래 값을 읽어 JSON 하나로만 답해줘. 설명 글이나 코드 블록 표시는 빼줘.',
@@ -397,7 +403,7 @@
     var inc = incotermIn(str(j.incoterms) + ' ' + str(j.incoterms_place));
     return {
       header: { invoiceNo: str(j.invoice_no), date: d ? d.iso : '', dateAmbiguous: !!(d && d.ambiguous), dateAlt: d ? d.alt : '', supplier: str(j.supplier),
-        currency: str(j.currency).toUpperCase(), poNo: headPo, incoterms: inc ? inc.code : str(j.incoterms).toUpperCase(), incotermsPlace: str(j.incoterms_place) || (inc ? inc.place : ''), blNo: str(j.bl_no).toUpperCase() },
+        currency: str(j.currency).toUpperCase(), poNo: headPo, incoterms: inc ? inc.code : str(j.incoterms).toUpperCase(), incotermsPlace: str(j.incoterms_place) || (inc ? inc.place : ''), blNo: str(j.bl_no).toUpperCase(), blDate: (readDate(str(j.bl_date)) || {}).iso || '' },
       items: items, skipped: [], totals: { sub: num(j.sub_total) === '' ? null : num(j.sub_total), total: num(j.total) === '' ? null : num(j.total), charges: [] }, notes: notes, pattern: null
     };
   }

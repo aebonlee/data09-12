@@ -135,6 +135,7 @@ table.list td.nowrap { white-space: nowrap; }
 .alert { padding: 10px 14px; border-radius: var(--radius); margin: 10px 0; }
 .alert.warn { background: #fdecea; color: #7a1c14; }
 .alert.info { background: #eaf1fa; color: #123a66; }
+.alert.retro { background: #fdecea; color: #7a1c14; border-left: 4px solid #b3261e; font-weight: 600; }   /* 원산지증명서 「소급문구 필요」(2026-09-30) */
 
 /* 대화상자·알림 */
 .dialog { border: none; border-radius: 12px; padding: 0; width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 32px); }

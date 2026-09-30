@@ -1116,6 +1116,101 @@ test('설정 템플릿에 C/O 요청 문안 추가(설정 화면에서 바꿀 �
   assert.deepEqual(L.emptyDb().co, { reqs: [], history: [] });
 });
 
+console.log('\nB/L DATE 소급문구 (09-30 요청 「선적일 기준 7일 이상 지난 건 소급문구」)');
+// 경과일 = 기준일 − B/L DATE. 기준일 2026-09-28(TODAY) 에서 09-21 은 7일(필요), 09-22 는 6일(불필요)
+test('경계: 7일 = 소급문구 필요, 6일 = 필요 없음 (기준 오늘)', () => {
+  const st = L.defaultSettings();
+  const r7 = C.coRetro({ status: 'requested', requested_on: '2026-09-25', bl_date: '2026-09-21' }, TODAY, st);
+  assert.deepEqual([r7.days, r7.need, r7.basis, r7.refDate, r7.label], [7, true, 'today', TODAY, '소급문구 필요 (Issued Retrospectively)']);
+  assert.match(r7.detail, /B\/L DATE 2026-09-21 → 기준일 2026-09-28\(오늘\) 7일 경과/);
+  const r6 = C.coRetro({ status: 'requested', requested_on: '2026-09-25', bl_date: '2026-09-22' }, TODAY, st);
+  assert.deepEqual([r6.days, r6.need, r6.label], [6, false, '소급 불필요']);
+  const none = C.coRetro({ status: 'requested' }, TODAY, st);
+  assert.deepEqual([none.known, none.need, none.label], [false, false, 'B/L DATE 없음']);
+  assert.equal(C.coRetro({ bl_date: '2026/9/21' }, TODAY, st).label, 'B/L DATE 형식 확인(YYYY-MM-DD)');
+});
+test('기준일: 발급(예정)일 → 수령일(받은 건) → 설정(오늘 · 요청 받은 날)', () => {
+  const st = L.defaultSettings();
+  const base = { status: 'requested', requested_on: '2026-09-25', bl_date: '2026-09-20' };
+  assert.deepEqual(['basis', 'days'].map(k => C.coRetro(Object.assign({}, base, { issue_date: '2026-09-26' }), TODAY, st)[k]), ['issue', 6]);
+  assert.deepEqual(['basisLabel', 'days'].map(k => C.coRetro(Object.assign({}, base, { status: 'received', received_on: '2026-09-27' }), TODAY, st)[k]), ['C/O 수령일', 7]);
+  const req = Object.assign({}, st, { co_retro_basis: 'requested' });
+  assert.deepEqual(['basisLabel', 'days', 'need'].map(k => C.coRetro(base, TODAY, req)[k]), ['요청 받은 날', 5, false]);
+  assert.equal(C.coRetro(base, TODAY, st).days, 8);                       // 기본은 오늘
+});
+test('기준 일수는 설정으로 바꿈(10일이면 7일은 불필요 · 문자 "10" 도 됨) · 잘못된 값은 7', () => {
+  const r = { status: 'requested', bl_date: '2026-09-21' };
+  assert.equal(C.coRetro(r, TODAY, { co_retro_days: 10 }).need, false);
+  assert.equal(C.coRetro(r, TODAY, { co_retro_days: '10' }).threshold, 10);
+  assert.equal(C.coRetro(r, TODAY, { co_retro_days: 0 }).threshold, 7);
+  assert.equal(L.defaultSettings().co_retro_days, 7);
+});
+test('표시·거르기·엑셀: 확인 칸에 「소급문구 필요 N일」, 취소 건은 빼고 끝난 건은 넣음, 엑셀에 B/L DATE·기준일·경과일·소급문구', () => {
+  const d = L.emptyDb();
+  const a = C.coAdd(d, { requested_on: '2026-09-27', invoice_no: 'A-1', bl_date: '2026-09-21', supplier_code: 'X' }, '2026-09-25T00:00:00Z');
+  const b = C.coAdd(d, { requested_on: '2026-09-27', invoice_no: 'B-1', bl_date: '2026-09-22', supplier_code: 'X' }, '2026-09-25T00:00:01Z');
+  const c = C.coAdd(d, { requested_on: '2026-09-27', invoice_no: 'C-1', bl_date: '2026-09-01', supplier_code: 'X' }, '2026-09-25T00:00:02Z');
+  C.coSetStatus(d, c.id, 'cancelled', '2026-09-26', '2026-09-26T00:00:00Z');
+  assert.deepEqual(C.coFlags(a, TODAY, d.settings).map(f => f.label), ['소급문구 필요 7일']);
+  assert.deepEqual(C.coFlags(b, TODAY, d.settings), []);
+  assert.deepEqual(C.coFlags(c, TODAY, d.settings), []);
+  assert.equal(C.coCounts(d, TODAY).retro, 1);
+  const rows = C.coRows(d, TODAY);
+  assert.deepEqual(['B/L DATE(선적일)', '소급 기준일', '기준일 구분', '경과일', '소급문구'].map(k => rows[0][k]), ['2026-09-21', TODAY, '오늘', 7, '필요']);
+  assert.deepEqual([rows[1]['경과일'], rows[1]['소급문구']], [6, '불필요']);
+  assert.equal(C.coRows(L.emptyDb(), TODAY).length, 0);
+  // 고치기: 예전 요청(칸이 없던 것)을 그대로 저장하면 바뀐 칸 없음
+  const old = { id: 'o1', status: 'requested', requested_on: '2026-09-20', invoice_no: 'O-1' };
+  d.co.reqs.push(old);
+  assert.equal(C.coUpdate(d, 'o1', { invoice_no: 'O-1', bl_date: '', issue_date: '' }, '2026-09-28T00:00:00Z'), false);
+  assert.equal(C.coUpdate(d, 'o1', { bl_date: '2026-09-10' }, '2026-09-28T00:00:01Z'), true);
+  assert.match(d.co.history[d.co.history.length - 1].note, /bl_date/);
+});
+test('메일 초안: 7일 이상이면 B/L Date 와 소급 발급 요청 문장이 자동으로, 6일이면 없음, 문구는 설정에서', () => {
+  const d = sampleDb();
+  const sup = L.supplierByCode(d.suppliers, 'EX-A01');
+  const r7 = C.coAdd(d, { invoice_no: 'INV-7', bl_date: '2026-09-21', co_type: 'FTA 원산지증명서' }, '2026-09-28T00:00:00Z');
+  const r6 = C.coAdd(d, { invoice_no: 'INV-6', bl_date: '2026-09-22', co_type: 'FTA 원산지증명서' }, '2026-09-28T00:00:01Z');
+  let m = C.coDraft([r7], sup, d, { today: TODAY });
+  assert.match(m.body, /- Invoice No: INV-7 \/ B\/L Date: September 21, 2026/);
+  assert.match(m.body, /B\/L date of Invoice INV-7 is September 21, 2026, which is 7 or more days before the issue date of the certificate\. Could you please issue the certificate retrospectively and mark it "ISSUED RETROSPECTIVELY"\?/);
+  assert.ok(m.body.indexOf('retrospectively') < m.body.indexOf('We would appreciate'));      // 대상 목록 바로 뒤
+  assert.deepEqual(m.retro, [r7.id]);
+  assert.match(m.noteKo, /소급문구 필요\(B\/L DATE 에서 7일 이상\): Invoice INV-7/);
+  m = C.coDraft([r6], sup, d, { today: TODAY });
+  assert.doesNotMatch(m.body, /retrospectively/);
+  assert.doesNotMatch(m.body, /\n{3,}/);                                  // 빈 {RETRO} 자리가 빈 줄을 남기지 않음
+  assert.deepEqual(m.retro, []);
+  m = C.coDraft([r7, r6], sup, d, { today: TODAY });                     // 두 건을 묶으면 해당 건만
+  assert.match(m.body, /B\/L date of Invoice INV-7 is/);
+  assert.doesNotMatch(m.body, /INV-6 is/);
+  d.settings.co_retro_phrase = 'ISSUED RETROACTIVELY';
+  d.settings.co_retro_line = 'Retro please: {RETRO_REFS} / {RETRO_PHRASE}';
+  d.templates.co_request = { subject: 'CO {REF}', body: 'Hi\n{CO_LIST}\nThanks' };   // {RETRO} 없는 예전 문안 → 목록 뒤에 넣음
+  m = C.coDraft([r7], sup, d, { today: TODAY });
+  assert.equal(m.body, 'Hi\n- Invoice No: INV-7 / B/L Date: September 21, 2026\n\nRetro please: Invoice INV-7 / ISSUED RETROACTIVELY\nThanks');
+  assert.match(L.defaultTemplates().co_request.body, /\{CO_LIST\}\n\n\{RETRO\}\n\n/);
+});
+test('번호로 채우기: B/L DATE 는 A/N 의 ETD(On Board) → 대장 선적 예정일 순', () => {
+  const d = anDb30();
+  const row = L.anQueue(d).rows.filter(r => r.bl === 'EXSH261001')[0];
+  assert.ok(row && row.etd);
+  const p = C.coSuggest(d, { po_no: 'EX4500010006' }, L, I);
+  assert.deepEqual([p.bl_no, p.bl_date], ['EXSH261001', row.etd]);
+  assert.ok(p.via.includes('A/N 의 ETD(On Board) → B/L DATE'));
+  const q = C.coSuggest(sampleDb(), { po_no: 'EX4500010001' }, L, I);          // A/N 없음 → 대장 ETD(예정일일 수 있어 확인 표시)
+  assert.equal(q.bl_date, sampleDb().pos.filter(x => x.po_no === 'EX4500010001')[0].etd);
+  assert.ok(q.via.some(v => /선적 예정일\(ETD\) — 실제 B\/L DATE 와 같은지 확인/.test(v)));
+  const e = C.coSuggest({ pos: [], invoices: [{ header: { invoiceNo: 'Z-1', blDate: '2026-09-15' }, items: [] }] }, { invoice_no: 'Z-1' }, L, I);
+  assert.deepEqual([e.bl_date, e.via.includes('Invoice 에 적힌 B/L DATE')], ['2026-09-15', true]);
+});
+test('Invoice 글의 「B/L Date」 라벨 → header.blDate, 「B/L DATE: 20-SEP-2026」 줄을 B/L 번호로 읽지 않음', () => {
+  const a = I.readInvoice('Invoice No: IN-84\nInvoice Date: 2026-09-25\nB/L No: EXSH261001\nB/L Date: 2026-09-20\n1  AB-1  Bolt  10  2.00  20.00', {});
+  assert.deepEqual([a.header.blNo, a.header.blDate, a.header.date], ['EXSH261001', '2026-09-20', '2026-09-25']);
+  const b = I.readInvoice('Invoice No: IN-85\nInvoice Date: 2026-09-25\nB/L DATE: 20-SEP-2026\n1  AB-1  Bolt  10  2.00  20.00', {});
+  assert.deepEqual([b.header.blNo, b.header.blDate], ['', '2026-09-20']);
+});
+
 console.log('\nAI 자동 보내기(선택) 요청 모양 (09-30)');
 test('키가 있으면 Bearer, 그림이 있으면 image_url 로 함께, 주소 끝 /chat/completions 정리', () => {
   const r = AI.buildRequest({ baseUrl: 'https://llm.example.com/v1/chat/completions/', model: 'm', apiKey: 'k' }, 'P', ['data:image/jpeg;base64,AA']);

@@ -197,7 +197,7 @@
     var card = h('div', { class: 'card' }, h('h2', null, (hd.invoiceNo ? 'Invoice ' + hd.invoiceNo : d.file) + ' — 확인·고치기'));
     if (d.needsAi) card.appendChild(h('div', { class: 'alert warn' }, d.notes[0] || '스캔본입니다.', ' 아래 「AI 로 읽기」에서 읽어 주십시오.'));
     // 헤더 칸
-    var F = [['invoiceNo', 'Invoice No'], ['date', '날짜(YYYY-MM-DD)'], ['supplier', '공급사'], ['currency', '통화'], ['incoterms', 'Incoterms'], ['incotermsPlace', 'Incoterms 장소'], ['poNo', 'PO 번호(위쪽)'], ['blNo', 'B/L·AWB 번호(Invoice 에 적힌 것)']];
+    var F = [['invoiceNo', 'Invoice No'], ['date', '날짜(YYYY-MM-DD)'], ['supplier', '공급사'], ['currency', '통화'], ['incoterms', 'Incoterms'], ['incotermsPlace', 'Incoterms 장소'], ['poNo', 'PO 번호(위쪽)'], ['blNo', 'B/L·AWB 번호(Invoice 에 적힌 것)'], ['blDate', 'B/L DATE(YYYY-MM-DD, Invoice 에 적힌 것)']];
     var grid = h('div', { class: 'form-grid cols-4' });
     F.forEach(function (f) {
       var inp = h('input', { type: 'text', value: hd[f[0]] || '', onchange: function (e) {
