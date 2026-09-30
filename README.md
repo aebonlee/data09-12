@@ -9,6 +9,8 @@
 | 진행 단계 | 1단계 개발 완료 (2026-09-28), 메일 추가 자료(실물 PO·OC·회신 메일·Cummins 주간 현황·항차 매뉴얼)와 추가 요청(Cummins Promise Date → EXW DATE)과 그 답변(오늘 기준 미선적·건별 입력·지난주 파일 비교), 저녁 새 요청(도착 통지 A/N 탭), 밤 실물 A/N 양식(TMS NO·B/L 별 항차등록) 반영 (2026-09-29), 답변 반영(TMS NO = 신청번호·Incoterms 비교 끔·HBL 기준, 2026-09-30), 「프로젝트 개선」 새 요청(Invoice PDF → 엑셀·PO 번호, Cummins 구분 HCE 만, Invoice → B/L → 항차등록, 원산지증명서 요청 탭, 2026-09-30) — https://aebonlee.github.io/data09-12/ |
 | 다음 개발 | 2단계 — Contact List·Packing List·B/L 샘플로 열 연결 보정, 확인 사항(기획서 11.4) 답에 맞춰 OC 일자·납기 기준 확정 |
 
+> 이 도구는 외부망(인터넷 · AI 사용 가능) 버전입니다. 사내 폐쇄망용은 [data09-28](https://github.com/aebonlee/data09-28) (Invoice → 엑셀 · 항차등록 확인 · 원산지증명서, 인터넷 · AI 없이 동작).
+
 ## 실행 방법
 
 **온라인에서 바로 쓰기: https://aebonlee.github.io/data09-12/**
