@@ -875,4 +875,257 @@ test('SRM 은 HBL 기준: MBL 만 온 B/L 은 MBL 로 대신 올리되 「HBL �
   assert.equal(L.anIsMblOnly(seaRecs[0]), false);
 });
 
+/* ── 2026-09-30 새 요청: Invoice → 엑셀 · Invoice → B/L → 항차 · Cummins 구분 HCE · 원산지증명서 요청 ── */
+const I = require('../js/invoice.js');
+const C = require('../js/co.js');
+const AI = require('../js/ai.js');
+
+console.log('\nInvoice 숫자·날짜 읽기 (09-30)');
+test('미국식 1,234.56 · 유럽식 1.234,56 은 하나로 확정', () => {
+  assert.deepEqual(I.amountCandidates('1,234.56'), [1234.56]);
+  assert.deepEqual(I.amountCandidates('1.234,56'), [1234.56]);
+  assert.deepEqual(I.amountCandidates('EUR 12,40'), [12.4]);          // 뒤가 두 자리 → 소수점
+  assert.deepEqual(I.amountCandidates('1,234,567'), [1234567]);       // 세 자리씩 여러 번 → 천단위
+  assert.deepEqual(I.amountCandidates('(50.00)'), [-50]);
+});
+test('뒤가 정확히 세 자리(2.480 · 1,234)는 둘 다 후보 — 고르는 것은 계산', () => {
+  assert.deepEqual(I.amountCandidates('2.480'), [2480, 2.48]);
+  assert.deepEqual(I.amountCandidates('0,850'), [0.85]);              // 앞이 0 이면 천단위일 수 없음
+});
+test('숫자 칸: 품번·PO·날짜 속 숫자는 칸이 아님', () => {
+  const cells = I.numberCells('10  DIN-912-M8  M261110501  2026-09-20  4  12.50  50.00');
+  assert.deepEqual(cells.map(c => c.tok), ['10', '4', '12.50', '50.00']);
+});
+test('수량 × 단가 = 금액 — 열 순서가 달라도(단가·수량·금액)', () => {
+  const s = I.solveLine(I.numberCells('Scheibe   0,85   500   425,00'));
+  assert.deepEqual([s.qty, s.unit, s.amount], [500, 0.85, 425]);
+});
+test('반올림 허용: 7 × 14.29 = 100.03 ≈ 100.00, 3 × 0.33 = 0.99 ≈ 1.00, 하지만 1.20 은 아님', () => {
+  assert.ok(I.solveLine(I.numberCells('A  7  14.29  100.00')));
+  assert.ok(I.solveLine(I.numberCells('A  3  0.33  1.00')));
+  assert.equal(I.solveLine(I.numberCells('A  3  0.33  1.20')), null);
+});
+test('날짜: 22.09.2026 · Sep 20, 2026 · 03/04/2026(애매 — 다른 해석 함께)', () => {
+  assert.equal(I.readDate('22.09.2026').iso, '2026-09-22');
+  assert.equal(I.readDate('Sep 20, 2026').iso, '2026-09-20');
+  const d = I.readDate('03/04/2026');
+  assert.deepEqual([d.iso, d.ambiguous, d.alt], ['2026-03-04', true, '2026-04-03']);
+  assert.equal(I.readDate('2026-02-30'), null);
+});
+
+console.log('\nInvoice 예시 두 양식 (09-30)');
+const LEDGER_POS = S.ledger(TODAY).map(p => p.po_no);
+const INV_A = I.readInvoice(S.invoicePdfs[0].lines.join('\n'), { ledgerPos: LEDGER_POS });
+const INV_B = I.readInvoice(S.invoicePdfs[1].lines.join('\n'), { ledgerPos: LEDGER_POS });
+test('A(독일식): 헤더 — Invoice 9000001 · 2026-09-22 · EUR · EXW Frankfurt · PO EX4500010008 · 공급사는 위쪽 회사명(추정 메모)', () => {
+  const h = INV_A.header;
+  assert.deepEqual([h.invoiceNo, h.date, h.currency, h.incoterms, h.incotermsPlace, h.poNo], ['9000001', '2026-09-22', 'EUR', 'EXW', 'Frankfurt', 'EX4500010008']);
+  assert.match(h.supplier, /EXAMPLE ENGINE GMBH/);
+  assert.ok(INV_A.notes.some(n => /공급사 라벨/.test(n)));
+});
+test('A: 부품 4줄 — 유럽식 숫자, 2 × 2.480,00 은 표의 자리로 수량 2 · 단가 2480(뒤바뀌지 않음)', () => {
+  assert.deepEqual(INV_A.items.map(i => [i.partNo, i.qty, i.unitPrice, i.amount]),
+    [['EXE-8801-A', 4, 1234.5, 4938], ['EXE-8802', 25, 12.4, 310], ['EXE-8803-C', 120, 0.85, 102], ['EXE-8804', 2, 2480, 4960]]);
+  assert.ok(INV_A.items.every(i => i.poNo === 'EX4500010008' && i.poFrom === '헤더'));
+  assert.equal(INV_A.items[0].desc, 'Fuel injector assy');                // 항번 10 은 품명에 섞이지 않음
+});
+test('A: 합계 줄(Sub Total·Freight·Total)은 부품이 아니고, 금액 합 10,310 = Sub Total', () => {
+  const s = I.docSummary(INV_A);
+  assert.deepEqual([s.lines, s.sum, s.stated, s.totalOk, s.bad], [4, 10310, 10310, true, 0]);
+  assert.equal(INV_A.totals.charges[0].label, 'Freight');
+});
+test('B(줄마다 PO): PO 3건 — 대장 번호 EX4500010007 과 사내 모양 O261000002·O261000003, 헤더 PO 는 비움', () => {
+  assert.deepEqual(INV_B.items.map(i => i.poNo), ['EX4500010007', 'O261000002', 'O261000002', 'O261000003']);
+  assert.ok(INV_B.items.every(i => i.poFrom === '줄'));
+  assert.equal(INV_B.header.poNo, '');
+  assert.deepEqual(I.invoicePos(INV_B), ['EX4500010007', 'O261000002', 'O261000003']);
+  assert.deepEqual(INV_B.items.map(i => i.partNo), ['EXC-5501', 'EXC-5502', 'EXC-5503', 'EXC-5504']);   // PO 가 품번으로 잡히지 않음
+});
+test('B: 넷째 줄 4 × 310.00 ≠ 1,420.00 — 버리지 않고 짐작으로 넣고 검산 실패 표시(합계는 적힌 대로라 일치)', () => {
+  const it = INV_B.items[3];
+  assert.deepEqual([it.qty, it.unitPrice, it.amount, it.guessed], [4, 310, 1420, true]);
+  const c = I.checkItem(it);
+  assert.deepEqual([c.ok, c.expected, c.diff], [false, 1240, 180]);
+  const s = I.docSummary(INV_B);
+  assert.deepEqual([s.bad, s.totalOk], [1, true]);   // 합계만 보면 놓치는 줄 — 줄마다 검산이 필요한 이유
+});
+test('단가가 수량보다 앞인 표: 2.480,00 × 2 도 표의 다른 줄이 정한 자리(단가·수량·금액)로 — 수량 2', () => {
+  const r = I.readInvoice(['Pos  Artikel  Preis  Menge  Betrag', '1  DIN-912-M8  Schraube  1.234,56  10  12.345,60', '2  DIN-125-A8  Scheibe  0,85  500  425,00', '3  HYD-4471  Pumpe  2.480,00  2  4.960,00'].join('\n'));
+  assert.deepEqual(r.pattern, [-2, -3, -1]);   // [수량, 단가, 금액] 자리(뒤에서 센 번호): 수량 = 뒤에서 둘째, 단가 = 셋째
+  assert.deepEqual(r.items.map(i => [i.qty, i.unitPrice]), [[10, 1234.56], [500, 0.85], [2, 2480]]);
+});
+test('PO 구역: 「PO No. …」 줄 아래 부품은 그 PO', () => {
+  const r = I.readInvoice(['Invoice No: T-1', 'PO No. M261110501', '1  AB-100  Bolt  10  2.00  20.00', 'PO No. M261110502', '2  AB-200  Nut  5  1.00  5.00'].join('\n'));
+  assert.deepEqual(r.items.map(i => [i.poNo, i.poFrom]), [['M261110501', '헤더'], ['M261110502', 'PO 구역']]);
+});
+test('주소·전화 줄은 부품으로 만들지 않음', () => {
+  const r = I.readInvoice('Musterstrasse 1-2-3, 60000 Frankfurt\nTel: 069 1234 5678   Fax: 069 1234 5679');
+  assert.equal(r.items.length, 0);
+});
+test('ERP 표: 부품 한 줄마다 헤더 반복 · PO No 칸 · 검산 표시', () => {
+  const rows = I.erpRows([Object.assign({ file: 'a.pdf', engine: '전자 PDF' }, INV_A), Object.assign({ file: 'b.pdf', engine: '전자 PDF' }, INV_B)]);
+  assert.equal(rows.length, 8);
+  assert.deepEqual([rows[0]['Invoice No'], rows[7]['Invoice No'], rows[7]['PO No'], rows[7]['검산'], rows[0]['Incoterms']], ['9000001', 'EXCI-2609-017', 'O261000003', '확인 필요', 'EXW Frankfurt']);
+});
+test('PDF 글 조각 → 줄: 같은 높이는 한 줄, 칸 사이가 넓으면 공백 세 칸', () => {
+  const t = (s, x, y, w) => ({ str: s, transform: [10, 0, 0, 10, x, y], width: w });
+  const txt = I.itemsToLines([t('Qty', 300, 700, 15), t('Part', 50, 700, 20), t('EX-1', 50, 680, 20), t('4', 300, 681, 5)]);
+  assert.equal(txt, 'Part   Qty\nEX-1   4');
+});
+test('AI 답(JSON) 읽기 — 울타리·설명이 섞여도, 유럽식 글자 숫자도', () => {
+  const r = I.parseAiAnswer('여기 결과입니다\n```json\n{"invoice_no":"S-1","invoice_date":"2026-09-01","currency":"eur","po_no":"M261110501","sub_total":"1.234,50","lines":[{"part_no":"P-1","description":"Pump","qty":1,"unit_price":"1.234,50","amount":1234.5}]}\n```');
+  assert.deepEqual([r.header.invoiceNo, r.header.currency, r.items[0].unitPrice, r.items[0].poNo, r.items[0].poFrom, r.totals.sub], ['S-1', 'EUR', 1234.5, 'M261110501', '헤더', 1234.5]);
+  assert.throws(() => I.parseAiAnswer('죄송합니다'), /JSON/);
+  assert.match(I.aiPrompt('x.pdf'), /PO 번호/);
+});
+
+console.log('\nInvoice 번호 → B/L → 항차등록 (09-30)');
+function anDb30() {
+  const d = sampleDb();
+  let recs = S.anMails(TODAY).map(m => L.parseArrivalNotice(L.parseEml(L.utf8(m.text)), d, { file: m.name, today: TODAY }));
+  S.anRealMails(TODAY).forEach(m => { recs = recs.concat(L.anParseAll(L.parseEml(L.utf8(m.text)), d, { file: m.name, today: TODAY }, { grids: (m.grids || []).map(g => ({ name: g.name, rows: g.rows })), pdfs: (m.pdfs || []).map(x => ({ name: x.name, pages: x.pages })) })); });
+  L.anAddMails(d, recs);
+  return d;
+}
+test('A/N 에서 Invoice 번호를 읽음: 항공 HAWB 사본 「INV: 9000001」, 라벨 「Invoice No.」, 표 칸 「Invoice No」', () => {
+  const d = anDb30(), rows = L.anQueue(d).rows;
+  assert.deepEqual(rows.find(r => r.key === 'EXAW261001').invs, ['9000001']);
+  assert.deepEqual(rows.find(r => r.key === 'EXAW261002').invs, ['9000002']);
+  const one = L.parseArrivalNotice({ subject: 'A/N', body: 'HBL NO : EXHB000111\nCommercial Invoice No. : CI-7788\nETA : 2026-10-01' }, d, {});
+  assert.equal(one.fields.inv_no, 'CI-7788');
+  const g = L.anRecordsFromGrid([['HBL NO', 'PO LIST', 'Invoice No', '입항일'], ['EXHB0001', 'M261110501', 'inv-01, INV-02', '2026-10-01']], 't', {});
+  assert.equal(g[0].f.inv_no, 'INV-01, INV-02');
+  assert.deepEqual(L.anInvList(g[0].f.inv_no), ['INV-01', 'INV-02']);
+  const sentence = L.parseArrivalNotice({ subject: 'A/N', body: 'Please send Commercial Invoice, Packing List.\nHBL NO : EXHB000112' }, d, {});
+  assert.equal(sentence.fields.inv_no, '');                                 // 번호 표시 없는 문장은 안 잡힘
+});
+test('Invoice A(9000001): PO 로는 B/L 2건(분할)이지만 A/N 의 Invoice 번호로 EXAW261001 하나로 좁힘 → 항차등록 대기', () => {
+  const d = anDb30(), doc = { header: INV_A.header, items: INV_A.items };
+  const lk = I.invoiceLink(doc, d, L);
+  assert.deepEqual([lk.bls.map(b => b.bl), lk.byInvoiceNo, lk.state], [['EXAW261001'], true, 'pending']);
+  assert.ok(lk.bls[0].via.includes('A/N 의 Invoice 번호'));
+  const po = I.invoiceLink({ header: { invoiceNo: 'NONE-1', poNo: 'EX4500010008' }, items: [] }, d, L);
+  assert.deepEqual([po.bls.map(b => b.bl).sort(), po.multi], [['EXAW261001', 'EXAW261002'], true]);
+});
+test('항차등록 완료 표시 후 → 「항차등록 완료 날짜」, 등록 후 ETA 가 바뀌면 SRM 조정 필요', () => {
+  const d = anDb30(), q = L.anQueue(d);
+  L.anRegister(d, q.rows.filter(r => r.key === 'EXAW261001'), '2026-09-29', '2026-09-29T01:00:00Z');
+  let lk = I.invoiceLink({ header: INV_A.header, items: INV_A.items }, d, L);
+  assert.deepEqual([lk.state, lk.bls[0].label], ['registered', '항차등록 완료 2026-09-29']);
+  d.an.regs.EXAW261001.eta = '2000-01-01';
+  lk = I.invoiceLink({ header: INV_A.header, items: INV_A.items }, d, L);
+  assert.equal(lk.bls[0].state, 'reg_eta');
+});
+test('Invoice B(줄마다 PO): PO 3건이 한 B/L(EXSH261002), 대장에 없는 PO 는 표시', () => {
+  const d = anDb30(), lk = I.invoiceLink({ header: INV_B.header, items: INV_B.items }, d, L);
+  assert.deepEqual(lk.bls.map(b => b.bl), ['EXSH261002']);
+  assert.deepEqual(lk.pos.map(p => [p.po_no, p.inLedger]), [['EX4500010007', true], ['O261000002', false], ['O261000003', false]]);
+});
+test('B/L 을 못 찾으면 no_bl, 번호로만 찾기(PO 번호)', () => {
+  const d = anDb30();
+  assert.equal(I.invoiceLink({ header: { invoiceNo: 'X', poNo: 'Z999999999' }, items: [] }, d, L).state, 'no_bl');
+  const r = I.lookupByNumber('9000002', d, L, []);
+  assert.deepEqual([r.kind, r.link.bls.map(b => b.bl)], ['Invoice 번호(A/N)', ['EXAW261002']]);
+  assert.equal(I.lookupByNumber('EX4500010006', d, L, []).link.bls[0].bl, 'EXSH261001');
+});
+
+console.log('\nCummins EXW — 구분 HCE 만 (09-30 요청)');
+test('기본은 HCE 만(설정 cum_gubun_only 켜짐) — HDX 줄 숨김, 끄면 전체', () => {
+  const r = L.cumminsRows(S.cumGrid().grid, {});
+  assert.equal(r.hasGubun, true);
+  const st = L.defaultSettings();
+  let v = L.cumminsGubunView(r.rows, st, r);
+  assert.deepEqual([v.on, v.rows.length, v.hidden, v.others], [true, 9, 1, { HDX: 1 }]);
+  assert.ok(v.rows.every(x => x.gubun === 'HCE'));
+  st.cum_gubun_only = false;
+  v = L.cumminsGubunView(r.rows, st, r);
+  assert.deepEqual([v.on, v.rows.length, v.gubun], [false, 10, '']);
+});
+test('구분 열이 없는 파일은 거르지 않고 missing 으로 알림, 「구분(HCE/HDX)」 같은 머리글도 잡음', () => {
+  const g = S.cumGrid().grid.map(r => r.slice());
+  const hi = g.findIndex(r => r.includes('구분'));
+  g[hi][g[hi].indexOf('구분')] = '구분(HCE/HDX)';
+  assert.equal(L.cumminsRows(g, {}).hasGubun, true);
+  g[hi][g[hi].indexOf('구분(HCE/HDX)')] = 'Type';
+  const r = L.cumminsRows(g, {});
+  const v = L.cumminsGubunView(r.rows, L.defaultSettings(), r);
+  assert.deepEqual([r.hasGubun, v.missing, v.on, v.rows.length], [false, true, false, 10]);
+});
+test('HCE 로 거른 줄로 계획하면 HDX 의 M261300040 은 「대장에 없음」에도 나오지 않음', () => {
+  const r = L.cumminsRows(S.cumGrid().grid, {});
+  const v = L.cumminsGubunView(r.rows, L.defaultSettings(), r);
+  const plan = L.cumminsExwPlan(v.rows, [], { status: 'Undispatched', gubun: '', asOf: S.CUM_AS_OF });
+  assert.ok(!plan.notInLedger.some(g => g.po === 'M261300040'));
+  const all = L.cumminsExwPlan(r.rows, [], { status: 'Undispatched', gubun: '', asOf: S.CUM_AS_OF });
+  assert.ok(all.notInLedger.some(g => g.po === 'M261300040'));
+});
+
+console.log('\n원산지증명서 요청 관리 (09-30)');
+test('요청 등록 → 메일 작성 → 업체에 요청 → 수령 → 통관팀 전달, 이력은 순서대로 쌓임', () => {
+  const d = L.emptyDb();
+  const r = C.coAdd(d, { requested_on: '2026-09-28', invoice_no: '9000001', bl_no: 'exaw261001', co_type: 'FTA 원산지증명서', due_date: '2026-10-02' }, '2026-09-28T01:00:00Z');
+  assert.deepEqual([r.status, r.bl_no], ['requested', 'EXAW261001']);
+  assert.equal(C.coSetStatus(d, r.id, 'drafted', '2026-09-28', '2026-09-28T02:00:00Z'), true);
+  assert.equal(C.coSetStatus(d, r.id, 'drafted', '2026-09-28', '2026-09-28T02:00:01Z'), false);   // 같은 상태는 기록 안 함
+  C.coSetStatus(d, r.id, 'sent', '2026-09-29', '2026-09-29T01:00:00Z');
+  C.coSetStatus(d, r.id, 'received', '2026-10-01', '2026-10-01T01:00:00Z');
+  C.coSetStatus(d, r.id, 'forwarded', '2026-10-01', '2026-10-01T02:00:00Z', '통관팀 메일로 전달');
+  assert.deepEqual([r.sent_on, r.received_on, r.forwarded_on], ['2026-09-29', '2026-10-01', '2026-10-01']);
+  assert.deepEqual(d.co.history.map(e => e.to), ['requested', 'drafted', 'sent', 'received', 'forwarded']);
+  assert.equal(C.coHistoryRows(d)[0]['메모'], '통관팀 메일로 전달');                     // 최근 것부터
+  assert.throws(() => C.coAdd(d, { co_type: 'x' }, '2026-09-28T03:00:00Z'), /하나는/);
+});
+test('기한 판정: 지남 · 임박 · 업체 미요청 2일 초과 · 수령 후 전달 전', () => {
+  const r = { status: 'requested', requested_on: '2026-09-20', due_date: '2026-09-27', supplier_code: 'X' };
+  assert.deepEqual(C.coFlags(r, TODAY).map(f => f.code), ['overdue', 'unsent']);
+  assert.deepEqual(C.coFlags(Object.assign({}, r, { status: 'sent', due_date: '2026-09-30' }), TODAY).map(f => f.label), ['기한 2일 남음']);
+  assert.deepEqual(C.coFlags(Object.assign({}, r, { status: 'received' }), TODAY).map(f => f.code), ['toforward']);
+  assert.deepEqual(C.coFlags(Object.assign({}, r, { status: 'forwarded' }), TODAY), []);
+});
+test('번호로 채우기: Invoice 번호 → A/N B/L·PO → 대장 업체', () => {
+  const d = anDb30();
+  const s = C.coSuggest(d, { invoice_no: '9000002' }, L, I);
+  assert.deepEqual([s.bl_no, s.po_no, s.supplier_code], ['EXAW261002', 'EX4500010008', 'EX-D04']);
+  const p = C.coSuggest(d, { po_no: 'EX4500010006' }, L, I);
+  assert.deepEqual([p.bl_no, p.supplier_code], ['EXSH261001', 'EX-C03']);
+});
+test('메일 초안: 영문 본문(대상 목록·C/O 종류·기한 영문 날짜) + 국문 요약은 기본 화면에만, mailto 주소', () => {
+  const d = sampleDb();
+  d.settings.sender_name = 'Buyer A';
+  const sup = L.supplierByCode(d.suppliers, 'EX-A01');
+  const reqs = [C.coAdd(d, { invoice_no: 'INV-1', bl_no: 'BL1', po_no: 'EX4500010002', co_type: 'FTA 원산지증명서', due_date: '2026-10-05' }, '2026-09-30T00:00:00Z')];
+  let m = C.coDraft(reqs, sup, d);
+  assert.equal(m.subject, '[Request] Certificate of Origin - Invoice INV-1');
+  assert.match(m.body, /Dear Anna Keller/);
+  assert.match(m.body, /Certificate of Origin \(FTA Certificate of Origin\)/);
+  assert.match(m.body, /- Invoice No: INV-1 \/ B\/L No: BL1 \/ PO No: EX4500010002/);
+  assert.match(m.body, /by October 5, 2026/);
+  assert.doesNotMatch(m.body, /국문 요약/);
+  assert.match(m.noteKo, /원산지증명서\(FTA 원산지증명서\)/);
+  assert.match(m.mailto, /^mailto:anna\.keller@alpha-precision\.example\.com\?cc=sales%40alpha-precision\.example\.com&subject=%5BRequest%5D/);
+  assert.match(decodeURIComponent(m.mailto.split('body=')[1]), /Best regards,\r\nBuyer A/);
+  m = C.coDraft(reqs, sup, d, { includeKo: true });
+  assert.match(m.body, /----\n\[국문 요약\]/);
+  const noDue = C.coDraft([Object.assign({}, reqs[0], { due_date: '' })], sup, d);
+  assert.match(noDue.body, /send it at your earliest convenience/);
+  assert.equal(C.typeEn('한-아세안 서식'), 'Certificate of Origin — 한-아세안 서식');
+});
+test('설정 템플릿에 C/O 요청 문안 추가(설정 화면에서 바꿀 수 있음)', () => {
+  assert.ok(L.TEMPLATE_KEYS.some(t => t.key === 'co_request'));
+  assert.match(L.defaultTemplates().co_request.body, /\{CO_LIST\}/);
+  assert.deepEqual(L.emptyDb().co, { reqs: [], history: [] });
+});
+
+console.log('\nAI 자동 보내기(선택) 요청 모양 (09-30)');
+test('키가 있으면 Bearer, 그림이 있으면 image_url 로 함께, 주소 끝 /chat/completions 정리', () => {
+  const r = AI.buildRequest({ baseUrl: 'https://llm.example.com/v1/chat/completions/', model: 'm', apiKey: 'k' }, 'P', ['data:image/jpeg;base64,AA']);
+  assert.equal(r.url, 'https://llm.example.com/v1/chat/completions');
+  assert.equal(r.init.headers.Authorization, 'Bearer k');
+  const b = JSON.parse(r.init.body);
+  assert.deepEqual(b.messages[0].content.map(c => c.type), ['text', 'image_url']);
+  assert.equal(AI.buildRequest({ baseUrl: 'http://x/v1', model: 'm' }, 'P').init.headers.Authorization, undefined);
+  assert.equal(AI.check({ baseUrl: 'http://10.0.0.5/v1', model: 'm' }, 'https:').errors.length, 1);
+  assert.equal(AI.readAnswer({ choices: [{ message: { content: '{"a":1}' } }] }), '{"a":1}');
+});
+
 console.log('\n' + passed + '개 통과' + (process.exitCode ? ' — 실패 있음' : ''));

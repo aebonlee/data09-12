@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>외자재 운영관리 도우미 — PO 발주·OC·EXW·선적서류</title>
-  <meta name="description" content="해외 공급업체 연락처 조회, PO 발주 메일 초안 일괄 작성, OC 수령·EXW DATE 관리 대장, OC 미접수 팔로우업, Promise Date 변경 확인, 포워더 도착 통지(A/N) 메일 읽기와 항차등록 대기 관리, Packing List와 B/L 중량 대조를 브라우저 안에서 처리하는 1단계 도구">
+  <meta name="description" content="해외 공급업체 연락처 조회, PO 발주 메일 초안 일괄 작성, OC 수령·EXW DATE 관리 대장, OC 미접수 팔로우업, Promise Date 변경 확인, 포워더 도착 통지(A/N) 메일 읽기와 항차등록 대기 관리, Invoice PDF → ERP 엑셀(PO 번호·검산·B/L·항차등록 확인), 원산지증명서 요청 관리, Packing List와 B/L 중량 대조를 브라우저 안에서 처리하는 1단계 도구">
   <meta name="robots" content="noindex">
   <link rel="stylesheet" href="css/style.css">
 </head>
@@ -44,11 +44,16 @@
   <script src="vendor/xlsx.full.min.js"></script>
   <script src="vendor/pdf.min.js"></script>
   <script src="js/logic.js"></script>
+  <script src="js/invoice.js"></script>
+  <script src="js/co.js"></script>
+  <script src="js/ai.js"></script>
   <script src="js/sample-data.js"></script>
   <script src="js/store.js"></script>
   <script src="js/app.js"></script>
   <script src="js/view-po.js"></script>
   <script src="js/view-tools.js"></script>
   <script src="js/view-an.js"></script>
+  <script src="js/view-invoice.js"></script>
+  <script src="js/view-co.js"></script>
 </body>
 </html>

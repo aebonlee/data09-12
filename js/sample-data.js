@@ -540,7 +540,54 @@
     ];
   }
 
-  var api = { contactRows: contactRows, ledger: ledger, poPdfs: poPdfs, weeklyOld: weeklyOld, weeklyNew: weeklyNew, packingRows: packingRows, blWeights: blWeights, mails: mails, shift: shift,
+  // 외자 부품 Invoice 예시 2가지 양식(2026-09-30 「Invoice PDF → 엑셀」) — 모두 지어낸 값. 실물 양식을 받으면 그 배치로 바꿉니다.
+  //  A: 독일식(유럽 숫자 1.234,56 · 일.월.연), PO 는 위쪽에 한 번, 공급사 라벨 없음. Invoice 번호 9000001 = 항공 A/N 예시(HAWB EXAW261001)의 INV
+  //  B: 중국식(미국 숫자), 줄마다 PO(Order No.) — 한 Invoice 에 PO 3건. 넷째 줄은 금액을 일부러 틀리게(4 × 310.00 ≠ 1,420.00) 적어 검산 표시를 봅니다.
+  var invoicePdfs = [
+    { name: '예시데이터_Invoice_A_독일식_9000001.pdf', lines: [
+      'EXAMPLE ENGINE GMBH (SAMPLE)',
+      'Musterstrasse 1, 60000 Frankfurt am Main, Germany',
+      'COMMERCIAL INVOICE  (SAMPLE - NOT A REAL DOCUMENT)',
+      '',
+      'Invoice No.: 9000001          Invoice Date: 22.09.2026',
+      'Buyer: EXAMPLE BUYER CO., LTD. (SAMPLE)',
+      'Your Order: PO EX4500010008',
+      'Currency: EUR          Terms of Delivery: EXW Frankfurt, Incoterms 2020',
+      '',
+      'Pos   Part No.      Description                 Qty  Unit    Unit Price       Amount',
+      '10    EXE-8801-A    Fuel injector assy            4  PCS       1.234,50     4.938,00',
+      '20    EXE-8802      Turbo gasket set             25  SET          12,40       310,00',
+      '30    EXE-8803-C    Cylinder head bolt M12      120  PCS           0,85       102,00',
+      '40    EXE-8804      Water pump                    2  PCS       2.480,00     4.960,00',
+      '',
+      '                                    Sub Total                              10.310,00',
+      '                                    Freight                                     0,00',
+      '                                    Total EUR                              10.310,00',
+      '',
+      'Country of origin: Germany. Sample document for training only.'
+    ] },
+    { name: '예시데이터_Invoice_B_줄마다PO_EXCI-2609-017.pdf', lines: [
+      'COMMERCIAL INVOICE  (SAMPLE - NOT A REAL DOCUMENT)',
+      'Shipper/Exporter: EXAMPLE CHAIR MFG. CO. (SAMPLE)',
+      'Messrs: EXAMPLE BUYER CO., LTD. (SAMPLE)',
+      'Invoice No: EXCI-2609-017',
+      'Date: Sep 20, 2026',
+      'Price Terms: EXW SHANGHAI          Currency: USD',
+      '',
+      'Item  Order No.      Part No.   Description            Q\'ty   Unit Price    Amount',
+      '1     EX4500010007   EXC-5501   OPERATOR SEAT ASSY        10       185.00    1,850.00',
+      '2     O261000002     EXC-5502   SEAT BELT KIT             10        42.50      425.00',
+      '3     O261000002     EXC-5503   ARMREST LH                 2        64.00      128.00',
+      '4     O261000003     EXC-5504   SUSPENSION UNIT            4       310.00    1,420.00',
+      '',
+      '                                          Sub Total              3,823.00',
+      '                                          Total USD              3,823.00',
+      '',
+      'Sample document for training only.'
+    ] }
+  ];
+
+  var api = { invoicePdfs: invoicePdfs, contactRows: contactRows, ledger: ledger, poPdfs: poPdfs, weeklyOld: weeklyOld, weeklyNew: weeklyNew, packingRows: packingRows, blWeights: blWeights, mails: mails, shift: shift,
     echoSupplier: echoSupplier, realPoLines: realPoLines, realPoPaste: realPoPaste, realLedger: realLedger, ocGrid: ocGrid, ocFiles: ocFiles, replyEml: replyEml,
     WOS_HEAD: WOS_HEAD, weeklyWk37: weeklyWk37, weeklyWk38: weeklyWk38,
     foxSupplier: foxSupplier, cumLedger: cumLedger, CUM_HEAD: CUM_HEAD, cumGrid: cumGrid, cumPrevGrid: cumPrevGrid, CUM_AS_OF: CUM_AS_OF, anMails: anMails,

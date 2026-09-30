@@ -24,6 +24,8 @@ db.suppliers = L.importSuppliers(L.applyMapping(S.contactRows, L.guessMapping(Ob
 db.pos = S.ledger(BASE).map(p => L.cleanPo(p, db.suppliers));
 xlsx('예시데이터_관리대장.xlsx', { '관리대장': L.ledgerRows(db, BASE) });
 S.poPdfs.forEach(p => fs.writeFileSync(path.join(OUT, p.name), L.makeSimplePdf(p.lines)));
+// 외자 부품 Invoice 예시 2가지 양식(2026-09-30) — 지어낸 값
+S.invoicePdfs.forEach(p => fs.writeFileSync(path.join(OUT, p.name), L.makeSimplePdf(p.lines)));
 S.mails(BASE).forEach(m => fs.writeFileSync(path.join(OUT, m.name), m.text));
 // 포워더 도착 통지(A/N) 예시 3가지 양식 + 같은 B/L 의 수정 A/N(ETA 변경) — 지어낸 것
 S.anMails(BASE).forEach(m => fs.writeFileSync(path.join(OUT, m.name), m.text));

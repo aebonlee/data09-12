@@ -32,6 +32,9 @@
       regs: p.an.regs && typeof p.an.regs === 'object' ? p.an.regs : {},
       history: Array.isArray(p.an.history) ? p.an.history : []
     };
+    // 2026-09-30: 읽은 Invoice(부품 줄·헤더·연결 확인용 — PDF 원본은 저장하지 않음), 원산지증명서 요청·이력
+    if (Array.isArray(p.invoices)) db.invoices = p.invoices;
+    if (p.co && typeof p.co === 'object') db.co = { reqs: Array.isArray(p.co.reqs) ? p.co.reqs : [], history: Array.isArray(p.co.history) ? p.co.history : [] };
     if (p._sample) db._sample = true;
     return db;
   }

@@ -70,6 +70,20 @@
     db._sample = true;
   }
 
+  function sampleRecs() {
+    var today = App.today();
+    ensureAnSample();
+    var recs = S.anMails(today).map(function (m) { return L.parseArrivalNotice(L.parseEml(L.utf8(m.text)), App.db, { file: m.name, today: today }); });
+    // 실물 양식을 본뜬 예시(해상 본문 표 + 엑셀 첨부 모양, 항공 본문 표) — 값은 모두 지어낸 것
+    S.anRealMails(today).forEach(function (m) {
+      var mail = L.parseEml(L.utf8(m.text));
+      recs = recs.concat(L.anParseAll(mail, App.db, { file: m.name, today: today }, { grids: (m.grids || []).map(function (g) { return { name: '첨부 ' + g.name, rows: g.rows }; }), pdfs: (m.pdfs || []).map(function (d) { return { name: '첨부 ' + d.name, pages: d.pages }; }) }));
+    });
+    return recs;
+  }
+  // Invoice 화면의 예시가 B/L·항차등록 연결까지 보이도록 예시 A/N 을 조용히 넣습니다(이미 있으면 건너뜀)
+  App.loadAnSample = function () { var r = L.anAddMails(App.db, sampleRecs()); L.anSyncToPos(App.db); return r.added; };
+
   App.views.an = function (main) {
     var db = App.db, today = App.today(), st = App.state;
     an();
@@ -97,16 +111,7 @@
     main.appendChild(h('div', { class: 'card' }, h('h2', null, 'A/N 메일 올리기'), drop,
       h('div', { class: 'btn-row', style: 'margin-top:12px' },
         h('label', { class: 'btn btn-primary' }, '파일 선택(.eml·.xls·.pdf, 여러 개)', fileIn),
-        h('button', { type: 'button', class: 'btn', onclick: function () {
-          ensureAnSample();
-          var recs = S.anMails(today).map(function (m) { return L.parseArrivalNotice(L.parseEml(L.utf8(m.text)), App.db, { file: m.name, today: today }); });
-          // 실물 양식을 본뜬 예시(해상 본문 표 + 엑셀 첨부 모양, 항공 본문 표) — 값은 모두 지어낸 것
-          S.anRealMails(today).forEach(function (m) {
-            var mail = L.parseEml(L.utf8(m.text));
-            recs = recs.concat(L.anParseAll(mail, App.db, { file: m.name, today: today }, { grids: (m.grids || []).map(function (g) { return { name: '첨부 ' + g.name, rows: g.rows }; }), pdfs: (m.pdfs || []).map(function (d) { return { name: '첨부 ' + d.name, pages: d.pages }; }) }));
-          });
-          addRecs(recs);
-        } }, '예시 A/N으로 해 보기'),
+        h('button', { type: 'button', class: 'btn', onclick: function () { addRecs(sampleRecs()); } }, '예시 A/N으로 해 보기'),
         q.groups.length ? h('button', { type: 'button', class: 'btn btn-ghost', onclick: function () {
           App.dialog('A/N 메일 목록 비우기', h('p', null, '읽어 둔 A/N 메일을 모두 지웁니다. 항차등록 완료 표시와 이력, 대장에 이미 넣은 B/L·ETA는 그대로 둡니다.'),
             [{ label: '취소' }, { label: '비우기', danger: true, onClick: function () { an().mails = []; App.save(); App.render(); } }]);
@@ -173,7 +178,7 @@
       return h('span', null, h('strong', null, r.bl),
         r.mblOnly ? h('span', { class: 'badge warn', title: 'SRM은 HBL 기준입니다. A/N에 MBL만 있어 MBL로 대신 관리합니다. HBL과 이 MBL이 함께 적힌 A/N이 오면 자동으로 이어집니다. HBL을 알면 「확인·고치기」에서 B/L(HBL) 칸에 넣어 주십시오.' }, 'HBL 없음 · MBL로 대신') : null,
         r.mbl ? h('small', { class: 'muted' }, h('br'), 'MBL ' + r.mbl) : null,
-        h('br'), h('small', { class: 'muted' }, 'TMS NO ' + (r.tms || '-') + (r.req_no && r.req_no !== r.tms ? ' · 신청번호 ' + r.req_no : '') + (r.mode ? ' · ' + r.mode : '')));
+        h('br'), h('small', { class: 'muted' }, 'TMS NO ' + (r.tms || '-') + (r.req_no && r.req_no !== r.tms ? ' · 신청번호 ' + r.req_no : '') + (r.mode ? ' · ' + r.mode : '') + (r.invs && r.invs.length ? ' · Invoice ' + r.invs.join(', ') : '')));
     }
     function poListCell(r) {
       var inLedger = r.ledger.map(function (x) { return x.po_no; });

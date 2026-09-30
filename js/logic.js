@@ -23,6 +23,8 @@
       transit_in: 45,
       an_tms_labels: 'TMS NO, TMS No., TMS 번호, TMS, 신청번호, HIPRO',   // A/N 에서 TMS NO 를 찾을 칸·라벨 이름(앞이 우선). 2026-09-30 확정: TMS NO = HIPRO 신청번호
       an_cmp_incoterms: false, // 메일 표와 B/L 사본의 Incoterms 가 다를 때 참고 표시(2026-09-30 확정: 비교 불필요 — 기본 끔)
+      cum_gubun: 'HCE',        // Cummins EXW 에서 볼 구분 값(2026-09-30 요청 「구분 HCE 만 조회」)
+      cum_gubun_only: true,    // 켜 두면 그 구분만 봅니다(기본). 끄면 전체 구분
       sender_name: '',
       sender_email: '',
       sender_company: '',
@@ -35,7 +37,8 @@
     { key: 'oc_followup', label: 'OC 미접수 팔로우업' },
     { key: 'delivery_check', label: '납기(EXW) 확인 요청' },
     { key: 'docs_request', label: '선적서류 요청' },
-    { key: 'an_missing', label: 'A/N 미수신 확인' }
+    { key: 'an_missing', label: 'A/N 미수신 확인' },
+    { key: 'co_request', label: '원산지증명서(C/O) 요청' }
   ];
 
   // 상황별 영문 메일 기본 문안(빈칸 채우기). 실제 사내 문안을 받으면 설정 화면에서 바꿉니다.
@@ -61,6 +64,11 @@
       an_missing: {
         subject: '[PO {PO}] Arrival Notice status',
         body: 'Dear {CONTACT},\n\nWe have not received the Arrival Notice for PO {PO} yet.\nCould you please check the shipment status and let us know?\n\nBest regards,\n{SENDER}\n{DEPT}\n{COMPANY}'
+      },
+      // 2026-09-30 요청: 통관팀이 요청한 원산지증명서를 업체에 요청하는 메일(일반적인 영문 예시 — 실제 사내 문안을 받으면 설정에서 바꿉니다)
+      co_request: {
+        subject: '[Request] Certificate of Origin - {REF}',
+        body: 'Dear {CONTACT},\n\nFor customs clearance of the shipment below, could you please send us the Certificate of Origin ({CO_TYPE})?\n\n{CO_LIST}\n\nWe would appreciate it if you could send it by {DUE}.\nPlease make sure that the invoice number, item description and quantity on the certificate match the commercial invoice.\n\nBest regards,\n{SENDER}\n{DEPT}\n{COMPANY}'
       }
     };
   }
@@ -68,8 +76,11 @@
   // 도착 통지(A/N): 읽은 메일, 항차등록 완료 표시(PO|B/L 별), 등록 이력
   function emptyAn() { return { mails: [], regs: {}, history: [] }; }
 
+  // 원산지증명서(C/O) 요청 관리(2026-09-30): 요청 목록과 상태 변경 이력
+  function emptyCo() { return { reqs: [], history: [] }; }
+
   function emptyDb() {
-    return { suppliers: [], pos: [], settings: defaultSettings(), templates: defaultTemplates(), an: emptyAn() };
+    return { suppliers: [], pos: [], settings: defaultSettings(), templates: defaultTemplates(), an: emptyAn(), invoices: [], co: emptyCo() };
   }
 
   /* ── 문자열·날짜 ─────────────────────────────── */
@@ -928,7 +939,7 @@
   //       노란 줄 = EXW 변경 건(확인 요망). PO·Part No. 수량에 맞게 — 분할 선적이면 날짜별 수량이 PO·OC 수량과 다를 수 있어 확인.
   // 실물 확인: 2행 머리글, Status 는 수식(=IF(COUNTBLANK(INV#)…,"Abnormal","Undispatched"),"Dispatched")의 저장된 값.
   var CUM_COLS = {
-    gubun: /^구분$/, status: /^status$/, po: /^customerpo$|^po$|^pono$/, part: /^partno$|^part$|^partnumber$/, qty: /^qty$|^quantity$/,
+    gubun: /^구분/, status: /^status$/, po: /^customerpo$|^po$|^pono$/, part: /^partno$|^part$|^partnumber$/, qty: /^qty$|^quantity$/,
     promise: /^promisedate$/, remarks: /^remarks?$/, so: /^so#?$/, om: /^1om#?$/, inv: /^inv#$/, req: /^reqdate$/
   };
   // grid: 행 배열(엑셀 1행부터, 빈 행 포함), yellow: { 엑셀 행번호: true }
@@ -952,7 +963,18 @@
         promise: p.date, promiseRaw: p.raw, cancelled: p.cancelled, remarks: str(at('remarks')), so: str(at('so')), om: str(at('om')),
         inv: str(at('inv')), yellow: !!yellow[r + 1] });
     }
-    return { rows: rows, headerRow: hi + 1, error: '', hasInv: col.inv != null };
+    return { rows: rows, headerRow: hi + 1, error: '', hasInv: col.inv != null, hasGubun: col.gubun != null };
+  }
+  // 2026-09-30 요청 「Cummins EXW 에서 구분 HCE 만 조회」: 켜 두면(기본) 설정의 구분 값만, 끄면 전체.
+  // 구분 열이 없는 파일이면 거를 수 없으므로 전체를 두고 missing 으로 알립니다.
+  function cumminsGubunView(rows, settings, parsed) {
+    var st = settings || {}, value = str(st.cum_gubun != null ? st.cum_gubun : 'HCE');
+    var on = st.cum_gubun_only !== false && !!value;
+    var missing = !!(parsed && parsed.hasGubun === false);
+    var shown = on && !missing ? rows.filter(function (r) { return sameWord(r.gubun, value); }) : rows.slice();
+    var others = {};
+    rows.forEach(function (r) { if (shown.indexOf(r) < 0) { var g = str(r.gubun) || '(빈칸)'; others[g] = (others[g] || 0) + 1; } });
+    return { on: on && !missing, value: value, gubun: on && !missing ? value : '', rows: shown, hidden: rows.length - shown.length, others: others, missing: on && missing };
   }
   function cumKey(po, part) { return str(po).toUpperCase() + '|' + norm(part); }
   function sameWord(a, b) { return str(a).toLowerCase().replace(/\s+/g, '') === str(b).toLowerCase().replace(/\s+/g, ''); }
@@ -1595,6 +1617,7 @@
     { key: 'containers', label: '컨테이너' },
     { key: 'forwarder', label: '포워더' },
     { key: 'pos', label: 'PO 번호' },
+    { key: 'inv_no', label: 'Invoice 번호' },
     { key: 'packages', label: '포장 수량' },
     { key: 'weight', label: '중량' },
     { key: 'shipper', label: 'SHIPPER' },
@@ -1623,6 +1646,8 @@
     containers: [{ re: 'Container(?:\\s*No\\.?)?|CNTR(?:\\s*No\\.?)?' }, { re: '컨테이너(?:\\s*번호)?' }],
     pos: [{ re: 'P\\.?\\s?O\\.?\\s*(?:No|Number|#|LIST)\\.?' }, { re: 'Order\\s*No\\.?' }, { re: 'Customer\\s*Ref(?:erence)?\\.?|Your\\s*Ref\\.?' }, { re: '발주\\s*번호|오더\\s*번호' }],
     req_no: [{ re: '신청\\s*번호|신청\\s*NO\\.?' }, { re: 'HIPRO(?:\\s*NO\\.?)?' }],
+    // 2026-09-30: Invoice 번호 → B/L → 항차등록 확인용. 「Invoice No」「INV:」「인보이스 번호」 — 문장 속 「Commercial Invoice,」는 번호 표시가 없어 안 잡힘
+    inv_no: [{ re: '(?:Commercial\\s*)?Invoice\\s*(?:No|Number|#)\\.?' }, { re: 'INV(?:\\s*(?:No|#)\\.?)?(?=\\s*[:：#])' }, { re: '인보이스\\s*번호|송장\\s*번호' }],
     shipper: [{ re: 'Shipper(?:\\s*Name)?' }, { re: '송하인|수출자' }],
     local_ar: [{ re: 'Local\\s*A\\/?R' }],
     cargo_type: [{ re: '화물\\s*형태|Cargo\\s*Type' }]
@@ -1679,6 +1704,12 @@
   }
   function anKey(v) { return str(v).toUpperCase().replace(/[^A-Z0-9]/g, ''); }
   function anPoList(v) { return anSplitPos(v); }
+  // Invoice 번호 칸 → 목록(쉼표·세미콜론·줄바꿈·공백으로 여럿). 비교는 영문·숫자만 대문자로(anKey)
+  function anInvList(v) {
+    var out = [];
+    str(v).toUpperCase().split(/[\s,，;；\n]+/).forEach(function (t) { t = t.replace(/^[^A-Z0-9]+|[^A-Z0-9]+$/g, ''); if (t && /\d/.test(t) && out.indexOf(t) < 0) out.push(t); });
+    return out;
+  }
 
   // 값 검사: 라벨이 본문 문장 속에 우연히 나와도(「packages will arrive」) 값 모양이 아니면 다음 후보로 넘어갑니다.
   function anValue(key, v, dayFirst) {
@@ -1710,6 +1741,9 @@
         return /[A-Za-z0-9]{3}/.test(v) && v.length <= 80 ? v : null;
       case 'pos':
         return /\d/.test(v) ? v : null;
+      case 'inv_no':
+        m = /[A-Z0-9][A-Z0-9\-\/]{2,24}/.exec(v.toUpperCase());
+        return m && /\d/.test(m[0]) ? m[0] : null;
       case 'req_no': case 'tms':
         m = /[A-Z0-9][A-Z0-9\-]{3,24}/.exec(v.toUpperCase());
         return m && /\d/.test(m[0]) ? m[0] : null;
@@ -1913,7 +1947,7 @@
       if (f.forwarder) src.forwarder = 'From: ' + str(mail.from);
     }
     // 2026-09-29 밤 추가 칸: 신청번호 · SHIPPER · Local AR · 화물형태 · TMS NO(라벨은 설정) · Incoterms · 운송 구분
-    ['req_no', 'shipper', 'local_ar', 'cargo_type'].forEach(function (k) {
+    ['req_no', 'shipper', 'local_ar', 'cargo_type', 'inv_no'].forEach(function (k) {
       var r = anFind(k, lines, dayFirst);
       if (r) { f[k] = r.value; src[k] = r.src; }
     });
@@ -1951,6 +1985,7 @@
   var AN_COLS = [
     ['req_no', ['신청번호', '신청NO', 'HIPRO', 'HIPRONO']],
     ['pos', ['POLIST', 'PONO', 'PO', 'PO번호', 'PONUMBER', '발주번호', 'CONTRACTNO', 'ORDERNO']],
+    ['inv_no', ['INVOICENO', 'INVOICE', 'INVNO', 'INV', 'COMMERCIALINVOICENO', '인보이스번호', '인보이스', '송장번호']],
     ['incoterms', ['INCOTERMS', 'INCOTERM', '인코텀즈', '인도조건']],
     ['local_ar', ['LOCALAR']],
     ['pol', ['적재항', 'DEPAPOL', 'POL', 'DEPA', '선적항', 'PORTOFLOADING', 'LOADINGPORT']],
@@ -2052,6 +2087,7 @@
         var raw = typeof v === 'number' ? String(v) : str(v);
         if (k === 'eta' || k === 'etd') { var d = toDate(typeof v === 'number' ? v : raw) || ((datesIn(raw)[0] || {}).iso || ''); if (!d) return; part.f[k] = d; }
         else if (k === 'bl' || k === 'mbl' || k === 'req_no' || k === 'tms') part.f[k] = raw.replace(/\s+/g, '').toUpperCase();
+        else if (k === 'inv_no') part.f[k] = raw.toUpperCase().replace(/\s*[,，;\n]\s*/g, ', ').trim();
         else part.f[k] = raw;
         part.src[k] = srcName + ' ' + (r + 1) + '행 「' + str(head[map[k]]) + '」 ' + raw.replace(/\n/g, ' ⏎ ').slice(0, 140) +
           (k === 'eta' && map.eta_time != null && str(cell('eta_time')) ? ' ' + str(cell('eta_time')) : '');
@@ -2136,6 +2172,7 @@
       var ob = /ON\s*BOARD/i.exec(flat);
       if (ob) { var od = datesIn(flat.slice(ob.index, ob.index + 80))[0]; if (od) put('etd', od.iso, 'ON BOARD … ' + od.raw); }
       var hp = /HIPRO\s*[:：]?\s*([A-Z0-9]{6,20})/i.exec(flat); if (hp) put('req_no', hp[1].toUpperCase(), hp[0]);
+      var iv = /(?:^|[^A-Z0-9])INV(?:OICE)?\s*(?:NO\.?|#)?\s*[:：#]\s*([A-Z0-9][A-Z0-9\-\/]{2,24})/i.exec(flat); if (iv && /\d/.test(iv[1])) put('inv_no', iv[1].toUpperCase(), iv[0].trim());
       var rt = anFind('tms', lines, false, anTmsRules(settings)); if (rt) put('tms', rt.value, rt.src);
       var ic = anIncoterms(flat); if (ic) put('incoterms', ic.value, ic.src);
       var wm = /(\d[\d,]*(?:\.\d+)?)\s*KGS?\b/i.exec(flat); if (wm) put('weight', wm[0], wm[0]);
@@ -2268,18 +2305,19 @@
       g.recs = g.recs.map(function (r, i) { return { r: r, i: i }; }).sort(function (a, b) {
         return str(a.r.receivedAt || a.r.received).localeCompare(str(b.r.receivedAt || b.r.received)) || a.i - b.i;
       }).map(function (x) { return x.r; });
-      var merged = {}, changes = [], last = '', pos = [], cntrs = [], mbls = [];
+      var merged = {}, changes = [], last = '', pos = [], cntrs = [], mbls = [], invs = [];
       g.recs.forEach(function (r) {
         AN_FIELDS.forEach(function (x) { if (r.fields[x.key]) merged[x.key] = r.fields[x.key]; });
         anPoList(r.fields.pos).forEach(function (no) { if (pos.indexOf(no) < 0) pos.push(no); });
         anContainerList(r.fields.containers).forEach(function (c) { var ex = cntrs.filter(function (x) { return x.no === c.no; })[0]; if (!ex) cntrs.push(c); else if (c.type) ex.type = c.type; });
         if (anKey(r.fields.mbl) && mbls.indexOf(anKey(r.fields.mbl)) < 0) mbls.push(anKey(r.fields.mbl));
+        anInvList(r.fields.inv_no).forEach(function (x) { if (invs.indexOf(x) < 0) invs.push(x); });
         var e = r.fields.eta;
         if (e) { if (last && e !== last) changes.push({ from: last, to: e, at: r.received, file: r.file, id: r.id, days: daysBetween(last, e) }); last = e; }
       });
       merged.pos = pos.join(', ');
       if (cntrs.length) merged.containers = anContainerText(cntrs);
-      g.merged = merged; g.poList = pos; g.containers = cntrs; g.etaChanges = changes;
+      g.merged = merged; g.poList = pos; g.containers = cntrs; g.etaChanges = changes; g.invs = invs;
       g.bl = g.key ? (merged.bl || '') : '';
       g.keys = [g.key].concat(g.alias, mbls).filter(function (x, i, a) { return x && a.indexOf(x) === i; });
       g.first = g.recs[0]; g.latest = g.recs[g.recs.length - 1];
@@ -2342,7 +2380,7 @@
         supplier_code: m.list.length ? m.list[0].po.supplier_code : '', via: vias.join(', ') || '대장 연결 없음', source: 'mail',
         vessel: mg.vessel || '', voyage: mg.voyage || '', etd: mg.etd || '', eta: eta, pol: mg.pol || '', pod: mg.pod || '',
         containers: g.containers, cargo_type: mg.cargo_type || '', mode: mg.mode || '', incoterms: mg.incoterms || '', local_ar: mg.local_ar || '',
-        shipper: mg.shipper || '', forwarder: mg.forwarder || '',
+        shipper: mg.shipper || '', forwarder: mg.forwarder || '', invs: g.invs.slice(),
         etaChanges: g.etaChanges, anCount: g.recs.length, firstAn: g.first.received, lastAn: g.latest.received,
         reg: reg, etaAfterReg: reg && reg.eta && eta && reg.eta !== eta ? { from: reg.eta, to: eta } : null
       });
@@ -2363,7 +2401,7 @@
       rows.push({ key: key, regKey: key, bl: hx.bl, mblOnly: false, mbl: '', tms: '', req_no: '', pos: nos, po_no: nos.join(', '),
         ledger: hx.list.map(function (p) { return { po_no: p.po_no, supplier_code: p.supplier_code, via: '대장' }; }), unknownPos: [],
         supplier_code: p0.supplier_code, via: '대장', source: 'ledger',
-        vessel: '', voyage: '', etd: p0.etd || '', eta: eta, pol: '', pod: '', containers: [], cargo_type: '', mode: '', incoterms: '', local_ar: '', shipper: '', forwarder: '',
+        vessel: '', voyage: '', etd: p0.etd || '', eta: eta, pol: '', pod: '', containers: [], cargo_type: '', mode: '', incoterms: '', local_ar: '', shipper: '', forwarder: '', invs: [],
         etaChanges: [], anCount: 0, firstAn: '', lastAn: '',
         reg: reg, etaAfterReg: reg && reg.eta && eta && reg.eta !== eta ? { from: reg.eta, to: eta } : null });
     });
@@ -2481,7 +2519,7 @@
       var money = anMoney(r.local_ar);
       return {
         'B/L(HBL)': r.bl, 'B/L 구분': r.mblOnly ? 'MBL(HBL 없음 — 확인)' : 'HBL', 'MBL': r.mbl, 'TMS NO': r.tms, '신청번호': r.req_no,
-        'PO 번호': r.po_no, 'PO 수': r.pos.length, '대장 PO 연결': r.ledger.map(function (x) { return x.po_no + '(' + x.via + ')'; }).join(', '),
+        'PO 번호': r.po_no, 'PO 수': r.pos.length, 'Invoice 번호': (r.invs || []).join(', '), '대장 PO 연결': r.ledger.map(function (x) { return x.po_no + '(' + x.via + ')'; }).join(', '),
         '대장에 없는 PO': r.unknownPos.join(', '), '업체': names.join(', '), 'SHIPPER': r.shipper,
         '운송 구분': r.mode, '화물형태': r.cargo_type, '컨테이너': anContainerText(r.containers), '컨테이너 수': r.containers.length,
         'Incoterms': r.incoterms, 'Local AR': r.local_ar, 'Local AR 통화': money ? money.ccy : '', 'Local AR 금액': money ? money.amount : '',
@@ -2550,7 +2588,7 @@
     parseTsv: parseTsv, cumminsRows: cumminsRows, cumminsExwPlan: cumminsExwPlan, applyCumminsExw: applyCumminsExw,
     cumminsStatusAsOf: cumminsStatusAsOf, cumminsWeekDiff: cumminsWeekDiff, weekNoteText: weekNoteText, exwEntries: exwEntries, exwPlanText: exwPlanText, LB_TO_KG: LB_TO_KG, bytesToBinary: bytesToBinary,
     crc32: crc32, makeZip: makeZip, makeSimplePdf: makeSimplePdf, ledgerRows: ledgerRows, pct: pct, num1: num1,
-    emptyAn: emptyAn, AN_FIELDS: AN_FIELDS, AN_ACTION: AN_ACTION, datesIn: datesIn, weightKg: weightKg, anKey: anKey, anPoList: anPoList,
+    emptyAn: emptyAn, emptyCo: emptyCo, cumminsGubunView: cumminsGubunView, anInvList: anInvList, AN_FIELDS: AN_FIELDS, AN_ACTION: AN_ACTION, datesIn: datesIn, weightKg: weightKg, anKey: anKey, anPoList: anPoList,
     parseArrivalNotice: parseArrivalNotice, anMailFromText: anMailFromText, anGroups: anGroups, anMatch: anMatch, anQueue: anQueue,
     anAddMails: anAddMails, anSyncToPos: anSyncToPos, anRegister: anRegister, anUnregister: anUnregister, anConfirmEta: anConfirmEta,
     anHistory: anHistory, anRegDateOf: anRegDateOf, anMailRows: anMailRows, anQueueRows: anQueueRows, anHistoryRows: anHistoryRows, toCsv: toCsv,

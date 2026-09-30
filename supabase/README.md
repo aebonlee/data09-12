@@ -21,12 +21,16 @@ DB 에 연결하는 코드는 다음 단계에서 붙입니다.
 | 테이블 | 용도 | localStorage 대응 |
 |---|---|---|
 | `workspace` | 판단 기준값(OC 대기·EXW 임박·출고 준수·중량 허용 오차), PO 번호 규칙, OC 키워드, 보내는 사람 정보, 엑셀 열 매핑, 예시 여부 (1인 1행) | `data09-12.db` 의 `settings` · `mappings` · `_sample` |
-| `mail_template` | 상황별 영문 메일 문안 5종(발주·OC 팔로우업·납기 확인·선적서류 요청·A/N 확인) | `data09-12.db` 의 `templates{}` |
+| `mail_template` | 상황별 영문 메일 문안 6종(발주·OC 팔로우업·납기 확인·선적서류 요청·A/N 확인·원산지증명서 요청) | `data09-12.db` 의 `templates{}` |
 | `supplier` | 업체 마스터 (Contact List) | `data09-12.db` 의 `suppliers[]` |
 | `purchase_order` | PO 관리 대장 (2026-09-29 저녁: `bl_no`·`eta` 칸 추가) | `data09-12.db` 의 `pos[]` |
 | `arrival_notice` | 포워더 도착 통지(A/N) 메일에서 읽은 값 — 메일 한 통이 한 줄, 칸별 근거 원문(`src`)과 처음 읽은 값(`parsed`) | `data09-12.db` 의 `an.mails[]` |
 | `voyage_registration` | 항차등록 완료 표시 — PO 번호 × B/L 한 줄, 등록일과 등록 때 ETA | `data09-12.db` 의 `an.regs{}` |
 | `voyage_history` | 항차등록 완료·취소·조정 ETA 반영 이력(기록성) | `data09-12.db` 의 `an.history[]` |
+| `invoice_doc` | 읽은 공급사 Invoice 헤더(번호·날짜·공급사·통화·Incoterms·헤더 PO·B/L·적힌 합계) — 2026-09-30, PDF 원본은 두지 않음 | `data09-12.db` 의 `invoices[]` |
+| `invoice_line` | Invoice 부품 줄(PO 번호·품번·품명·수량·단가·금액·짐작 여부·원문 줄). 정책이 「붙는 Invoice 도 본인 것」까지 확인(외래키는 RLS 를 거치지 않으므로) | `invoices[].items[]` |
+| `co_request` | 원산지증명서(C/O) 요청 — 요청일·통관팀 담당·B/L·Invoice·PO·업체·C/O 종류·기한·상태·보낸/받은/전달한 날 | `data09-12.db` 의 `co.reqs[]` |
+| `co_request_history` | C/O 요청 등록·고침·상태 변경 이력(기록성 — 읽기·쓰기만) | `co.history[]` |
 
 필드 이름은 도구의 이름을 그대로 썼습니다.
 SQL 예약어와 겹치는 업체의 `to`(수신 메일)만 `to_addr` 로 바꿨습니다.
@@ -35,7 +39,7 @@ SQL 예약어와 겹치는 업체의 `to`(수신 메일)만 `to_addr` 로 바꿨
 `purchase_order.supplier_code` 는 업체 마스터에 외래키로 묶지 않았습니다.
 도구가 업체 마스터에 없는 코드의 PO 도 대장에 남기고 「업체 미등록」으로 표시하기 때문입니다.
 
-기록성 데이터는 `voyage_history` 하나입니다. 읽기·쓰기 정책과 권한만 두어, 본인도 고치거나 지울 수 없습니다(등록을 취소하면 「등록 취소」 줄이 새로 쌓입니다). A/N 의 ETA 변경 이력은 저장하지 않고 `arrival_notice` 의 받은 순서에서 계산합니다.
+기록성 데이터는 `voyage_history`·`co_request_history` 입니다. 읽기·쓰기 정책과 권한만 두어, 본인도 고치거나 지울 수 없습니다(등록을 취소하면 「등록 취소」 줄이 새로 쌓입니다). A/N 의 ETA 변경 이력은 저장하지 않고 `arrival_notice` 의 받은 순서에서 계산합니다.
 
 ### 권한
 

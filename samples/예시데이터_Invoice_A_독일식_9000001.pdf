@@ -1,0 +1,53 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 1269 >>
+stream
+BT /F1 12 Tf 60 780 Td 16 TL
+(EXAMPLE ENGINE GMBH \(SAMPLE\)) Tj T*
+(Musterstrasse 1, 60000 Frankfurt am Main, Germany) Tj T*
+(COMMERCIAL INVOICE  \(SAMPLE - NOT A REAL DOCUMENT\)) Tj T*
+() Tj T*
+(Invoice No.: 9000001          Invoice Date: 22.09.2026) Tj T*
+(Buyer: EXAMPLE BUYER CO., LTD. \(SAMPLE\)) Tj T*
+(Your Order: PO EX4500010008) Tj T*
+(Currency: EUR          Terms of Delivery: EXW Frankfurt, Incoterms 2020) Tj T*
+() Tj T*
+(Pos   Part No.      Description                 Qty  Unit    Unit Price       Amount) Tj T*
+(10    EXE-8801-A    Fuel injector assy            4  PCS       1.234,50     4.938,00) Tj T*
+(20    EXE-8802      Turbo gasket set             25  SET          12,40       310,00) Tj T*
+(30    EXE-8803-C    Cylinder head bolt M12      120  PCS           0,85       102,00) Tj T*
+(40    EXE-8804      Water pump                    2  PCS       2.480,00     4.960,00) Tj T*
+() Tj T*
+(                                    Sub Total                              10.310,00) Tj T*
+(                                    Freight                                     0,00) Tj T*
+(                                    Total EUR                              10.310,00) Tj T*
+() Tj T*
+(Country of origin: Germany. Sample document for training only.) Tj T*
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1632
+%%EOF

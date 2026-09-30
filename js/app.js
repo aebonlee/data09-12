@@ -233,7 +233,7 @@
   var MENU = [
     ['#/home', '처음'], ['#/suppliers', '업체'], ['#/po', 'PO 발주 메일'], ['#/ledger', '관리 대장'],
     ['#/followup', 'OC 팔로우업'], ['#/kpi', '접수율·준수율'], ['#/mail', '메일 분류'],
-    ['#/promise', 'Promise Date'], ['#/cummins', 'Cummins EXW'], ['#/an', '도착 통지(A/N)'], ['#/weight', '중량 대조'], ['#/settings', '설정']
+    ['#/promise', 'Promise Date'], ['#/cummins', 'Cummins EXW'], ['#/an', '도착 통지(A/N)'], ['#/invoice', 'Invoice → 엑셀'], ['#/co', '원산지증명서'], ['#/weight', '중량 대조'], ['#/settings', '설정']
   ];
   App.go = function (hash) { if (location.hash === hash) App.render(); else location.hash = hash; };
   App.render = function () {
@@ -301,6 +301,8 @@
         step('#/promise', 'Promise Date', 'Cummins Weekly Order Status 두 주차(시트)를 비교해 Promise Date가 밀림·당김·취소된 줄을 찾습니다. 한 주차뿐이면 파일 안 변경 기록을 모읍니다.'),
         step('#/cummins', 'Cummins EXW', '오더 현황 분석 시트에서 오늘 기준 미선적(Undispatched)·구분으로 거른 줄의 Promise Date를 PO·품번별로 대장 EXW DATE에 넣고, 분할 건별 SRM 입력 목록을 만듭니다. 미선적 수량 합을 PO·OC 수량과 대조하고, 노란 칠과 지난주 파일과 달라진 줄을 표시합니다.'),
         step('#/an', '도착 통지(A/N)', '포워더 A/N 메일(.eml·붙여넣기)에서 B/L·선명/항차·ETA 등을 읽어 PO에 붙이고, B/L과 A/N이 있는데 항차등록 전인 PO를 대기 목록으로 모읍니다. 등록 완료를 날짜와 함께 표시하고, 같은 B/L의 ETA 변경을 알려 줍니다.'),
+        step('#/invoice', 'Invoice → 엑셀', '공급사 Invoice PDF에서 Invoice 번호·PO 번호·품번·수량·단가·금액을 읽어 ERP 업로드 엑셀로 만들고, 수량 × 단가 = 금액을 검산합니다. Invoice 번호·PO로 A/N의 B/L을 찾아 항차등록이 끝났는지 보여 줍니다. 스캔본은 AI로 읽습니다.'),
+        step('#/co', '원산지증명서', '통관팀이 요청한 원산지증명서를 적고, 업체에 보낼 영문 요청 메일 초안(국문 요약 함께)을 만든 뒤 요청 → 수령 → 통관팀 전달 상태와 이력을 관리합니다.'),
         step('#/weight', '중량 대조', 'Packing List 자재 합중량과 B/L 중량이 맞는지 확인합니다.'))));
     main.appendChild(h('div', { class: 'card' }, h('h2', null, '1단계에서 하지 않는 것'),
       h('ul', null,

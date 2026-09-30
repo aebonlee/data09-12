@@ -128,6 +128,66 @@ ETA     : 24-OCT-2026$txt$);
 end $t$;
 commit;
 
+-- Invoice · 원산지증명서 요청 (2026-09-30 추가)
+begin;
+set local request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
+set local role authenticated;
+do $t$
+declare v_id bigint;
+begin
+  insert into public.invoice_doc (doc_key, file_name, engine, invoice_no, invoice_date, supplier_name, currency, incoterms, incoterms_place, po_no, stated_sub_total)
+  values ('inv-a', '예시데이터_Invoice_A.pdf', '전자 PDF', '9000001', '2026-09-22', 'EXAMPLE ENGINE GMBH (SAMPLE)', 'EUR', 'EXW', 'Frankfurt', 'EX4500010008', 10310)
+  returning id into v_id;
+  insert into public.invoice_line (invoice_id, line_no, po_no, po_from, part_no, description, qty, unit_price, amount, source_line)
+  values (v_id, 1, 'EX4500010008', '헤더', 'EXE-8801-A', 'Fuel injector assy', 4, 1234.5, 4938, '10  EXE-8801-A  Fuel injector assy  4  PCS  1.234,50  4.938,00'),
+         (v_id, 2, 'EX4500010008', '헤더', 'EXE-8804', 'Water pump', 2, 2480, 4960, '');
+  perform public._assert_eq((select sum(amount) from public.invoice_line where invoice_id = v_id), 9898.00::numeric, 'Invoice 부품 줄 금액 합');
+  perform public._assert_raises(format($s$insert into public.invoice_line (invoice_id, line_no) values (%s, 1)$s$, v_id),
+    '23505', '같은 Invoice 의 줄 번호는 한 번만');
+  perform public._assert_raises($s$insert into public.invoice_doc (doc_key, currency) values ('inv-x', 'euro')$s$,
+    '23514', '통화는 영문 대문자 세 자리(ISO) 또는 빈칸');
+  perform public._assert_raises($s$insert into public.invoice_line (invoice_id, line_no, po_from) values ((select id from public.invoice_doc where doc_key = 'inv-a'), 9, '추측')$s$,
+    '23514', 'PO 출처는 줄·PO 구역·헤더·고침 중 하나');
+  update public.arrival_notice set invoice_nos = '9000001' where mail_key = 'an1abc';
+  perform public._assert_eq((select count(*) from public.arrival_notice where invoice_nos like '%9000001%'), 1::bigint, 'A/N 에 Invoice 번호 칸이 있다');
+  insert into public.mail_template (key, subject, body) values ('co_request', '[Request] Certificate of Origin - {REF}', $txt$Dear {CONTACT},
+
+{CO_LIST}$txt$);
+
+  insert into public.co_request (req_key, requested_on, invoice_no, bl_no, supplier_code, co_type, due_date)
+  values ('co1', '2026-09-28', '9000001', 'EXAW261001', 'EX-D04', 'FTA 원산지증명서', '2026-10-02');
+  insert into public.co_request_history (req_key, action, status_to, event_on, ref) values ('co1', 'create', 'requested', '2026-09-28', 'Invoice 9000001 · B/L EXAW261001');
+  update public.co_request set status = 'sent', sent_on = '2026-09-29' where req_key = 'co1';
+  insert into public.co_request_history (req_key, action, status_from, status_to, event_on) values ('co1', 'status', 'requested', 'sent', '2026-09-29');
+  perform public._assert_raises($s$insert into public.co_request (req_key, requested_on) values ('co2', '2026-09-28')$s$,
+    '23514', 'C/O 요청은 B/L·Invoice·PO 번호 중 하나가 있어야 한다');
+  perform public._assert_raises($s$update public.co_request set status = 'lost' where req_key = 'co1'$s$,
+    '23514', 'C/O 상태는 정해진 6가지만');
+  perform public._assert_raises($s$insert into public.co_request_history (req_key, action) values ('co1', 'purge')$s$,
+    '23514', 'C/O 이력 구분은 create·edit·status 만');
+  perform public._assert_raises($s$update public.co_request_history set note = 'x'$s$, '42501', 'C/O 이력은 본인도 고칠 수 없다');
+  perform public._assert_raises($s$delete from public.co_request_history$s$, '42501', 'C/O 이력은 본인도 지울 수 없다');
+end $t$;
+commit;
+
+-- 원산지 요청·Invoice 삭제 연쇄(부품 줄은 Invoice 와 함께 지워진다)
+begin;
+set local request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
+set local role authenticated;
+do $t$
+begin
+  insert into public.invoice_doc (doc_key) values ('inv-del');
+  insert into public.invoice_line (invoice_id, line_no) values ((select id from public.invoice_doc where doc_key = 'inv-del'), 1);
+  delete from public.invoice_doc where doc_key = 'inv-del';
+  perform public._assert_eq((select count(*) from public.invoice_line l where not exists (select 1 from public.invoice_doc d where d.id = l.invoice_id)), 0::bigint,
+    'Invoice 를 지우면 부품 줄도 함께 지워진다');
+end $t$;
+commit;
+
+-- B 가 A 의 Invoice id 를 어떻게든 알아냈다고 치고(슈퍼유저가 적어 둔 표), 그 id 에 줄을 붙여 보게 한다
+create table public.invoice_doc_ids_for_test as select id from public.invoice_doc;
+grant select on public.invoice_doc_ids_for_test to authenticated;
+
 -- ----------------------------------------------------------------------------
 -- 2. 사용자 B — A 의 행을 보지도, 고치지도, 지우지도, 대신 쓰지도 못한다
 -- ----------------------------------------------------------------------------
@@ -141,8 +201,21 @@ begin
     (select count(*) from public.workspace) + (select count(*) from public.mail_template)
     + (select count(*) from public.supplier) + (select count(*) from public.purchase_order)
     + (select count(*) from public.arrival_notice) + (select count(*) from public.voyage_registration)
-    + (select count(*) from public.voyage_history),
-    0::bigint, 'B 에게는 A 의 행이 7개 표 어디에서도 보이지 않는다');
+    + (select count(*) from public.voyage_history)
+    + (select count(*) from public.invoice_doc) + (select count(*) from public.invoice_line)
+    + (select count(*) from public.co_request) + (select count(*) from public.co_request_history),
+    0::bigint, 'B 에게는 A 의 행이 11개 표 어디에서도 보이지 않는다');
+
+  -- 외래키는 RLS 를 거치지 않는다 — A 의 Invoice id 에 B 가 줄을 붙이지 못하게 정책이 막는가
+  perform public._assert_raises(
+    $s$insert into public.invoice_line (invoice_id, line_no) values ((select min(id) from public.invoice_doc), 99)$s$,
+    '42501', 'B 에게는 A 의 Invoice 가 보이지 않아 id 를 못 찾고, 줄을 넣으면 정책이 막는다');
+  perform public._assert_raises(
+    format($s$insert into public.invoice_line (invoice_id, line_no) values (%s, 99)$s$, (select id from public.invoice_doc_ids_for_test limit 1)),
+    '42501', 'B 는 A 의 Invoice id 를 알아도 부품 줄을 붙일 수 없다 (with check)');
+  update public.co_request set status = 'cancelled';
+  get diagnostics n = row_count;
+  perform public._assert_eq(n, 0::bigint, 'B 의 UPDATE 는 A 의 C/O 요청에 닿지 않는다');
 
   update public.supplier set to_addr = 'attacker@example.com' where code = 'EX-A01';
   get diagnostics n = row_count;
@@ -164,6 +237,7 @@ begin
     '같은 PO 번호라도 사용자가 다르면 따로 저장된다');
 end $t$;
 commit;
+drop table public.invoice_doc_ids_for_test;
 
 -- B 가 자기 행의 owner_id 를 A 로 바꿔 넘기려 한다
 begin;
@@ -200,7 +274,7 @@ set local role anon;
 do $t$
 declare t text;
 begin
-  foreach t in array array['workspace','mail_template','supplier','purchase_order','arrival_notice','voyage_registration','voyage_history']
+  foreach t in array array['workspace','mail_template','supplier','purchase_order','arrival_notice','voyage_registration','voyage_history','invoice_doc','invoice_line','co_request','co_request_history']
   loop
     perform public._assert_raises(format('select * from public.%I', t), '42501', 'anon 은 ' || t || ' 를 읽을 수 없다');
   end loop;
@@ -226,7 +300,7 @@ begin
 
   perform public._assert_eq((select count(*) from pg_policy p join pg_class c on c.oid = p.polrelid
      join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public'),
-    26::bigint, '정책 수가 26개다 (6개 표 × 4 + 이력 2, 재실행해도 늘지 않는다)');
+    40::bigint, '정책 수가 40개다 (9개 표 × 4 + 이력 2개 표 × 2, 재실행해도 늘지 않는다)');
 end $t$;
 
 -- ----------------------------------------------------------------------------
@@ -300,6 +374,10 @@ begin
 end $t$;
 
 -- 정리 (슈퍼유저로 — 이력도 지운다)
+delete from public.co_request_history;
+delete from public.co_request;
+delete from public.invoice_line;
+delete from public.invoice_doc;
 delete from public.voyage_history;
 delete from public.voyage_registration;
 delete from public.arrival_notice;

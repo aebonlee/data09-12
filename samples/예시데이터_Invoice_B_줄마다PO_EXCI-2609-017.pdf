@@ -1,0 +1,50 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 1022 >>
+stream
+BT /F1 12 Tf 60 780 Td 16 TL
+(COMMERCIAL INVOICE  \(SAMPLE - NOT A REAL DOCUMENT\)) Tj T*
+(Shipper/Exporter: EXAMPLE CHAIR MFG. CO. \(SAMPLE\)) Tj T*
+(Messrs: EXAMPLE BUYER CO., LTD. \(SAMPLE\)) Tj T*
+(Invoice No: EXCI-2609-017) Tj T*
+(Date: Sep 20, 2026) Tj T*
+(Price Terms: EXW SHANGHAI          Currency: USD) Tj T*
+() Tj T*
+(Item  Order No.      Part No.   Description            Q'ty   Unit Price    Amount) Tj T*
+(1     EX4500010007   EXC-5501   OPERATOR SEAT ASSY        10       185.00    1,850.00) Tj T*
+(2     O261000002     EXC-5502   SEAT BELT KIT             10        42.50      425.00) Tj T*
+(3     O261000002     EXC-5503   ARMREST LH                 2        64.00      128.00) Tj T*
+(4     O261000003     EXC-5504   SUSPENSION UNIT            4       310.00    1,420.00) Tj T*
+() Tj T*
+(                                          Sub Total              3,823.00) Tj T*
+(                                          Total USD              3,823.00) Tj T*
+() Tj T*
+(Sample document for training only.) Tj T*
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1385
+%%EOF

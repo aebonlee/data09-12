@@ -394,8 +394,10 @@
   }
 
   App.views.cummins = function (main) {
-    // 기본값(수강생 답 09-29): 오늘 기준으로 다시 계산한 Status 가 Undispatched(미선적)인 줄만 — Abnormal·Dispatched 제외, 구분 HCE
-    var db = App.db, st = App.state.cum = App.state.cum || { status: 'Undispatched', gubun: 'HCE', recalc: true, asOf: App.today(), pick: {} };
+    // 기본값(수강생 답 09-29): 오늘 기준으로 다시 계산한 Status 가 Undispatched(미선적)인 줄만 — Abnormal·Dispatched 제외
+    // 구분(2026-09-30 요청 「구분 HCE 만 조회」): 설정 cum_gubun(기본 HCE)만 보는 것이 기본, 「전체 구분 보기」로 풀 수 있음
+    var db = App.db, st = App.state.cum = App.state.cum || { status: 'Undispatched', recalc: true, asOf: App.today(), pick: {} };
+    var gv = st.rows ? L.cumminsGubunView(st.rows, db.settings, { hasGubun: st.hasGubun }) : null;
     main.appendChild(App.pageHead('Cummins 오더 현황 → EXW DATE 입력'));
     main.appendChild(h('p', null, 'Cummins Integrated Order Status 파일의 분석 시트(예: 「wk38 분석E」)에서 Status·구분으로 거른 줄의 Promise Date를 관리 대장의 약속 EXW DATE로 넣습니다. Customer PO + Part No. 로 대장과 맞추고, 같은 PO·품번이 여러 날짜로 나뉘어 있으면(분할 선적) 날짜별 수량으로 보여 줍니다.'));
     main.appendChild(h('div', { class: 'alert info' },
@@ -435,7 +437,8 @@
 
     var sheetSel = st.wb ? h('select', { onchange: function () { st.sheet = sheetSel.value; load(); App.render(); } }, st.wb.SheetNames.map(function (n) { return h('option', { value: n }, n); })) : null;
     if (sheetSel) sheetSel.value = st.sheet;
-    var stIn = h('input', { type: 'text', value: st.status, list: 'cumStatus' }), gbIn = h('input', { type: 'text', value: st.gubun, list: 'cumGubun' });
+    var stIn = h('input', { type: 'text', value: st.status, list: 'cumStatus' }), gbIn = h('input', { type: 'text', value: db.settings.cum_gubun != null ? db.settings.cum_gubun : 'HCE', list: 'cumGubun' });
+    var gbOnly = h('input', { type: 'checkbox', checked: db.settings.cum_gubun_only !== false, onchange: function (e) { db.settings.cum_gubun_only = e.target.checked; App.save(); st.pick = {}; App.render(); } });
     var recalcIn = h('input', { type: 'checkbox', checked: st.recalc !== false && st.hasInv !== false, disabled: st.hasInv === false });
     var asOfIn = h('input', { type: 'date', value: st.asOf || App.today() });
     function uniq(k) { var o = []; st.rows.forEach(function (r) { if (r[k] && o.indexOf(r[k].trim()) < 0) o.push(r[k].trim()); }); return o.slice(0, 20); }
@@ -446,20 +449,29 @@
       st.error ? h('div', { class: 'alert warn' }, st.error) : null,
       h('div', { class: 'form-grid cols-4' },
         sheetSel ? App.field('시트', sheetSel, '「분석」이 든 시트를 먼저 고릅니다') : null,
-        App.field('Status', stIn, '비우면 전체. 대소문자·공백 무시'), App.field('구분', gbIn, '비우면 전체'),
+        App.field('Status', stIn, '비우면 전체. 대소문자·공백 무시'),
+        App.field('구분', h('span', null, h('label', { class: 'check' }, gbOnly, ' 이 구분만 보기'), gbIn), '기본은 HCE 만 봅니다(요청 09-30). 체크를 풀면 전체 구분을 봅니다. 값은 설정에 저장됩니다'),
         App.field('「파일에 없는 PO」를 찾을 업체', supSel),
         App.field('Status 기준일', h('span', null, h('span', { class: 'check' }, recalcIn, ' 이 날 기준으로 다시 계산'), asOfIn),
           st.hasInv === false ? 'INV# 열이 없어 파일에 저장된 Status를 씁니다' : '파일의 Status 수식과 같은 규칙(INV# 빔 + Promise Date가 기준일보다 앞 = Abnormal). 손으로 적은 값(x 등)은 그대로')),
       h('datalist', { id: 'cumStatus' }, uniq('status').map(function (v) { return h('option', { value: v }); })),
       h('datalist', { id: 'cumGubun' }, uniq('gubun').map(function (v) { return h('option', { value: v }); })),
       h('div', { class: 'btn-row' }, h('button', { type: 'button', class: 'btn btn-primary', onclick: function () {
-        st.status = stIn.value.trim(); st.gubun = gbIn.value.trim(); st.supplier = supSel.value; st.recalc = recalcIn.checked; st.asOf = asOfIn.value || App.today(); st.pick = {}; App.render();
+        st.status = stIn.value.trim(); db.settings.cum_gubun = gbIn.value.trim() || 'HCE'; App.save(); st.supplier = supSel.value; st.recalc = recalcIn.checked; st.asOf = asOfIn.value || App.today(); st.pick = {}; App.render();
       } }, '거르기 적용')),
       h('p', { class: 'note' }, '실물 파일의 Status는 =IF(INV#가 빔, IF(Promise Date < TODAY(), "Abnormal", "Undispatched"), "Dispatched") 수식입니다. 파일에 저장된 값은 마지막으로 저장한 날 기준이라, 기준일로 같은 규칙을 다시 계산합니다(엑셀에서 오늘 열었을 때와 같은 결과).')));
 
-    var wd = st.prevRows ? L.cumminsWeekDiff(st.prevRows, st.rows) : null;
+    // 구분 거르기를 먼저: 지난주 비교·EXW 후보·SRM 목록 모두 이 구분의 줄만
+    if (gv.missing) main.appendChild(h('div', { class: 'alert warn' }, '이 시트에서 「구분」 열을 찾지 못해 ' + gv.value + ' 로 거를 수 없습니다. 전체 줄을 보여 드립니다. 머리글 행 번호나 시트를 확인해 주세요.'));
+    else if (gv.on) main.appendChild(h('div', { class: 'alert info' }, '구분 ', h('strong', null, gv.value), ' 만 보고 있습니다 · ' + gv.rows.length + '줄 표시, 다른 구분 ' + gv.hidden + '줄 숨김' +
+      (gv.hidden ? '(' + Object.keys(gv.others).map(function (k) { return k + ' ' + gv.others[k] + '줄'; }).join(', ') + ')' : '') + ' ',
+      h('button', { type: 'button', class: 'btn btn-ghost', onclick: function () { db.settings.cum_gubun_only = false; App.save(); st.pick = {}; App.render(); } }, '전체 구분 보기')));
+    else main.appendChild(h('div', { class: 'alert warn' }, '전체 구분을 보고 있습니다(' + gv.rows.length + '줄). ',
+      h('button', { type: 'button', class: 'btn btn-ghost', onclick: function () { db.settings.cum_gubun_only = true; App.save(); st.pick = {}; App.render(); } }, gv.value + ' 만 보기')));
+    var gRows = gv.rows, gPrev = st.prevRows ? L.cumminsGubunView(st.prevRows, db.settings, {}).rows : null;
+    var wd = gPrev ? L.cumminsWeekDiff(gPrev, gRows) : null;
     var useAsOf = st.recalc !== false && st.hasInv !== false ? (st.asOf || App.today()) : '';
-    var plan = L.cumminsExwPlan(st.rows, db.pos, { status: st.status, gubun: st.gubun, supplierCode: st.supplier || '', asOf: useAsOf, weekDiff: wd });
+    var plan = L.cumminsExwPlan(gRows, db.pos, { status: st.status, gubun: '', supplierCode: st.supplier || '', asOf: useAsOf, weekDiff: wd });
     if (wd) {
       var prevSel = st.prevWb ? h('select', { onchange: function () { st.prevSheet = prevSel.value; loadPrev(); App.render(); } }, st.prevWb.SheetNames.map(function (n) { return h('option', { value: n }, n); })) : null;
       if (prevSel) prevSel.value = st.prevSheet;
@@ -567,7 +579,7 @@
       var g = sheetGrid(st.wb.Sheets[st.sheet]);
       st.grid = g.grid; st.yellow = g.yellow; st.yellowCount = g.yellowCount; st.pick = {}; st.last = null; parse();
     }
-    function parse() { var r = L.cumminsRows(st.grid, st.yellow); st.rows = r.rows; st.headerRow = r.headerRow; st.error = r.error; st.hasInv = r.hasInv; }
+    function parse() { var r = L.cumminsRows(st.grid, st.yellow); st.rows = r.rows; st.headerRow = r.headerRow; st.error = r.error; st.hasInv = r.hasInv; st.hasGubun = r.hasGubun; }
     function loadPrev() {
       var g = sheetGrid(st.prevWb.Sheets[st.prevSheet]);
       var r = L.cumminsRows(g.grid, {});
