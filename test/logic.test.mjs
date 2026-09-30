@@ -747,7 +747,8 @@ test('해상 메일 한 통(본문 표 + 엑셀 + PDF) → B/L 3건. 엑셀은 �
     [['EXSH261001', 1, 0, '2610E', '2026-09-25'], ['EXSH261002', 3, 1, '2608E', '2026-09-24'], ['EXZB261003', 6, 4, '2610E', '2026-09-26']]);
   assert.deepEqual(seaRecs.map(r => r.fields.mode), ['해상', '해상', '해상']);
   assert.equal(seaRecs[0].fields.mbl, '');                                   // HBL 과 같은 MBL 은 한 번만
-  assert.deepEqual(seaRecs[2].notes, ['Incoterms 「FOB」 · 첨부 PDF 「EXW」 다름 — 확인']);
+  assert.deepEqual(seaRecs[2].notes, []);                                   // 09-30 확정: Incoterms 는 비교하지 않음(기본)
+  assert.deepEqual(seaRecs[2].info, []);
   assert.equal(new Set(seaRecs.map(r => r.id)).size, 3);
 });
 test('항공 메일(ks_c_5601-1987 제목·QP HTML 표, HAWB PDF 첨부) → HAWB 2건, 같은 PO, 신청번호 각각', () => {
@@ -762,8 +763,8 @@ test('항공 메일(ks_c_5601-1987 제목·QP HTML 표, HAWB PDF 첨부) → HAW
   const alone = L.anParseAll({ subject: '', body: '' }, L.emptyDb(), { now: 'N' }, { pdfs });      // HAWB PDF 만 올려도 신청번호(HIPRO)
   assert.deepEqual(alone.map(r => [r.fields.bl, r.fields.req_no, r.fields.mode]), [['EXAW261001', 'EXM2610B0011', '항공'], ['EXAW261002', 'EXM2610B0012', '항공']]);
 });
-test('TMS NO: 실물 양식엔 칸이 없어 빈칸 / 표에 「TMS NO」 칸이 있으면 읽음 / 설정에 「신청번호」를 적으면 신청번호를 TMS NO 로 / 글의 「TMS NO : …」', () => {
-  assert.deepEqual(seaRecs.map(r => r.fields.tms), ['', '', '']);
+test('TMS NO: 기본(09-30 확정) = 신청번호 / 표에 「TMS NO」 칸이 있으면 읽음 / 설정에 「신청번호」를 적으면 신청번호를 TMS NO 로 / 글의 「TMS NO : …」', () => {
+  assert.deepEqual(seaRecs.map(r => r.fields.tms), ['EXM2610A0001', 'EXM2610A0002', 'EXM2610A0003']);
   const head = ['TMS NO', '신청번호', 'PO LIST', 'HBLNO', '입항일'];
   const g = [head, ['T2610-0001', 'EXM1', 'O261000001', 'EXHB0001', '2026-10-01']];
   assert.equal(L.anRecordsFromGrid(g, 't', L.defaultSettings())[0].f.tms, 'T2610-0001');
@@ -819,6 +820,59 @@ test('붙여넣은 표(탭으로 나뉜 칸) → 본문 표와 같이 읽음, �
   const txt = ['신청번호\tPO LIST\tHBLNO\t입항일', 'EXM9\tO261000001O261000002\tEXHB0009\t2026-10-09'].join('\n');
   const r = L.anParseAll(L.anMailFromText(txt), L.emptyDb(), { now: 'N' }, {});
   assert.deepEqual([r.length, r[0].fields.bl, r[0].fields.pos, r[0].fields.eta], [1, 'EXHB0009', 'O261000001, O261000002', '2026-10-09']);
+});
+
+console.log('수강생 답 반영 — TMS NO = HIPRO 신청번호 · Incoterms 비교 끔 · HBL 기준(MBL 만이면 표시) (09-30)');
+test('TMS NO 기본값: 신청번호·HIPRO 포함(TMS NO 칸이 따로 있으면 그 칸 먼저), 표 머리글 「신청번호」 → TMS NO, HIPRO 라벨 글도, 설정을 바꾸면 따름', () => {
+  assert.deepEqual(L.anTmsLabels(L.defaultSettings()).slice(-2), ['신청번호', 'HIPRO']);
+  assert.equal(L.defaultSettings().an_tms_labels, L.AN_TMS_DEFAULT);
+  const g = [['신청번호', 'PO LIST', 'HBLNO', '입항일'], ['EXM7', 'O261000001', 'EXHB0007', '2026-10-07']];
+  const r = L.anParseAll(L.anMailFromText(g.map(x => x.join('\t')).join('\n')), L.emptyDb(), { now: 'N' }, {})[0];
+  assert.deepEqual([r.fields.tms, r.fields.req_no], ['EXM7', 'EXM7']);
+  assert.match(r.src.tms, /신청번호/);
+  const t = L.parseArrivalNotice({ subject: '', body: 'HAWB NO : EXAW1\nHIPRO: EXM2610B0099\nETA : 2026-10-05' }, L.emptyDb(), {});
+  assert.equal(t.fields.tms, 'EXM2610B0099');
+  const g2 = [['신청 NO', 'PO LIST', 'HBLNO', '입항일'], ['EXM8', 'O261000001', 'EXHB0008', '2026-10-08']];   // 칸 이름이 달라도 신청번호로 읽힌 값이면
+  const r2 = L.anParseAll(L.anMailFromText(g2.map(x => x.join('\t')).join('\n')), L.emptyDb(), { now: 'N' }, {})[0];
+  assert.deepEqual([r2.fields.tms, r2.fields.req_no], ['EXM8', 'EXM8']);
+  const d = L.emptyDb(); d.settings.an_tms_labels = 'TMS NO';                  // 바꿀 수 있음: 신청번호를 TMS 로 쓰지 않게
+  assert.equal(L.anParseAll(L.anMailFromText(g.map(x => x.join('\t')).join('\n')), d, { now: 'N' }, {})[0].fields.tms, '');
+});
+test('예전 기본 TMS 칸 이름이 저장돼 있으면 새 기본값으로(사용자가 바꾼 값은 둠), 대기 목록은 예전 A/N 도 신청번호를 TMS NO 로', () => {
+  const st = { an_tms_labels: L.AN_TMS_OLD_DEFAULT };
+  assert.equal(L.migrateSettings(st), 1); assert.equal(st.an_tms_labels, L.AN_TMS_DEFAULT);
+  assert.equal(L.migrateSettings(st), 0);
+  const mine = { an_tms_labels: '운송관리번호' }; L.migrateSettings(mine); assert.equal(mine.an_tms_labels, '운송관리번호');
+  const d = anDb();
+  const recs = L.anParseAll(seaMail, d, { file: 'sea', now: 'N' }, {});
+  recs.forEach(r => { r.fields.tms = ''; r.parsed.tms = ''; });               // 09-29 에 읽어 TMS 가 빈 채로 저장된 A/N
+  L.anAddMails(d, recs);
+  assert.deepEqual(L.anQueue(d).rows.filter(r => r.source === 'mail').map(r => r.tms), ['EXM2610A0001', 'EXM2610A0002', 'EXM2610A0003']);
+});
+test('Incoterms 비교: 기본 끔(메모 없음), 켜면 확인 메모가 아닌 「참고」만 / 컨테이너 형식은 표 값(40DC)', () => {
+  const x = { grids: [{ name: '첨부 엑셀', rows: S.anSeaGrid(RT) }], pdfs: [{ name: '첨부 PDF', pages: S.anSeaPdfPages(RT).map(p => p.join('\n')) }] };
+  const d = anDb(); d.settings.an_cmp_incoterms = true;
+  const on = L.anParseAll(seaMail, d, { file: 'sea', now: 'N' }, x);
+  assert.deepEqual([on[2].notes, on[2].info], [[], ['참고: Incoterms 「FOB」 · 첨부 PDF 「EXW」']]);
+  assert.deepEqual(L.anContainerList(seaRecs[2].fields.containers).map(c => c.type), ['40DC', '40DC', '40DC', '40DC']);
+  assert.equal(L.anMailRows(Object.assign(anDb(), { an: { mails: on, regs: {}, history: [] } }))[2]['참고'], '참고: Incoterms 「FOB」 · 첨부 PDF 「EXW」');
+});
+test('SRM 은 HBL 기준: MBL 만 온 B/L 은 MBL 로 대신 올리되 「HBL 없음」 표시·내보내기 「B/L 구분」, HBL 이 오면 표시가 사라짐, 손으로 고치면 사라짐', () => {
+  const mk = (body, t) => L.parseArrivalNotice({ subject: '', body, dateTime: t }, L.emptyDb(), {});
+  const a = mk('MBL NO : EXMB0000000088\nPO NO : EX4500010006\nETA : 2026-10-01', '2026-09-01T00:00:00Z');
+  const d = anDb(); L.anAddMails(d, [a]);
+  let row = L.anQueue(d).rows.find(r => r.key === 'EXMB0000000088');
+  assert.equal(row.mblOnly, true);
+  assert.equal(L.anQueueRows([row], d)[0]['B/L 구분'], 'MBL(HBL 없음 — 확인)');
+  assert.equal(L.anMailRows(d).find(o => o['B/L 구분'] !== 'HBL')['B/L 구분'], 'MBL(HBL 없음 — 확인)');
+  L.anAddMails(d, [mk('HBL NO : EXHB0000000081\nMBL NO : EXMB0000000088\nETA : 2026-10-02', '2026-09-02T00:00:00Z')]);
+  row = L.anQueue(d).rows.find(r => r.key === 'EXHB0000000081');
+  assert.deepEqual([row.mblOnly, L.anQueue(d).rows.some(r => r.key === 'EXMB0000000088')], [false, false]);
+  const b = mk('MBL NO : EXMB0000000099\nETA : 2026-10-01', '2026-09-03T00:00:00Z');
+  assert.equal(L.anIsMblOnly(b), true);
+  b.fields.bl = 'EXHB0000000099'; b.fields.mbl = 'EXMB0000000099';             // 확인·고치기에서 HBL 을 넣음
+  assert.equal(L.anIsMblOnly(b), false);
+  assert.equal(L.anIsMblOnly(seaRecs[0]), false);
 });
 
 console.log('\n' + passed + '개 통과' + (process.exitCode ? ' — 실패 있음' : ''));

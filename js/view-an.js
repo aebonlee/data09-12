@@ -77,7 +77,7 @@
     main.appendChild(App.pageHead('도착 통지(A/N) · 항차등록 대기', h('div', { class: 'btn-row' },
       h('button', { type: 'button', class: 'btn', onclick: exportXlsx }, '엑셀 내보내기'),
       h('button', { type: 'button', class: 'btn', onclick: exportCsv }, 'CSV 내보내기'))));
-    main.appendChild(h('p', null, '포워더가 보내는 A/N(도착일정통지) 메일을 올리면 B/L(HBL, 없으면 MBL)·TMS NO·신청번호·PO 목록·컨테이너·화물형태·입항일(ETA)·Incoterms·Local AR 등을 읽어 대장의 PO에 붙입니다. 메일에 적힌 B/L마다 한 줄로 「항차등록 대기」에 모으고, 등록을 마치면 날짜와 함께 「등록 완료」로 표시합니다. B/L 한 건에 PO가 여럿이면 한 줄에 PO 목록으로 보여 드립니다. 같은 B/L의 새 A/N에서 ETA가 바뀌면 이전 → 이후로 알려 드립니다.'));
+    main.appendChild(h('p', null, '포워더가 보내는 A/N(도착일정통지) 메일을 올리면 B/L(HBL, 없으면 MBL)·TMS NO(= HIPRO 신청번호)·PO 목록·컨테이너·화물형태·입항일(ETA)·Incoterms·Local AR 등을 읽어 대장의 PO에 붙입니다. 메일에 적힌 B/L마다 한 줄로 「항차등록 대기」에 모으고, 등록을 마치면 날짜와 함께 「등록 완료」로 표시합니다. B/L 한 건에 PO가 여럿이면 한 줄에 PO 목록으로 보여 드립니다. 같은 B/L의 새 A/N에서 ETA가 바뀌면 이전 → 이후로 알려 드립니다.'));
 
     // ── 올리기: 끌어 놓기 · 파일 선택 · 붙여넣기 ──
     var fileIn = h('input', { type: 'file', accept: '.eml,.txt,.msg,.xls,.xlsx,.pdf,.htm,.html,message/rfc822,text/plain', multiple: true, style: 'display:none' });
@@ -145,7 +145,7 @@
       var pick = st.anPick = st.anPick || {};
       var dateIn = h('input', { type: 'date', value: st.anRegDate || today, onchange: function () { st.anRegDate = dateIn.value; } });
       var card = h('div', { class: 'card' }, h('h2', null, '항차등록 대기 ' + q.pending.length + '건'),
-        h('p', { class: 'note' }, 'A/N을 받았는데 아직 「등록 완료」로 표시하지 않은 B/L입니다(B/L 한 건 = 한 줄, HBL이 없으면 MBL). ETA가 빠른 순서입니다. SRM 항차 입력을 마친 건을 골라 등록일과 함께 표시해 주십시오. 대장에서 「A/N 수신」과 B/L 번호를 손으로 적은 PO도 B/L별로 여기에 나옵니다.'));
+        h('p', { class: 'note' }, 'A/N을 받았는데 아직 「등록 완료」로 표시하지 않은 B/L입니다(B/L 한 건 = 한 줄). SRM은 HBL 기준이라 HBL로 관리하고, HBL 없이 MBL만 온 건은 MBL로 대신 올리되 「HBL 없음」 표시를 붙입니다. ETA가 빠른 순서입니다. SRM 항차 입력을 마친 건을 골라 등록일과 함께 표시해 주십시오. 대장에서 「A/N 수신」과 B/L 번호를 손으로 적은 PO도 B/L별로 여기에 나옵니다.'));
       card.appendChild(App.table([
         { label: '', cell: function (r) { return h('input', { type: 'checkbox', 'aria-label': r.bl + ' 고르기', checked: !!pick[r.key], onchange: function (e) { pick[r.key] = e.target.checked; } }); } },
         { label: 'B/L', cell: blCell },
@@ -170,8 +170,10 @@
       main.appendChild(card);
     }
     function blCell(r) {
-      return h('span', null, h('strong', null, r.bl), r.mbl ? h('small', { class: 'muted' }, h('br'), 'MBL ' + r.mbl) : null,
-        h('br'), h('small', { class: 'muted' }, 'TMS NO ' + (r.tms || '-') + (r.req_no ? ' · 신청번호 ' + r.req_no : '') + (r.mode ? ' · ' + r.mode : '')));
+      return h('span', null, h('strong', null, r.bl),
+        r.mblOnly ? h('span', { class: 'badge warn', title: 'SRM은 HBL 기준입니다. A/N에 MBL만 있어 MBL로 대신 관리합니다. HBL과 이 MBL이 함께 적힌 A/N이 오면 자동으로 이어집니다. HBL을 알면 「확인·고치기」에서 B/L(HBL) 칸에 넣어 주십시오.' }, 'HBL 없음 · MBL로 대신') : null,
+        r.mbl ? h('small', { class: 'muted' }, h('br'), 'MBL ' + r.mbl) : null,
+        h('br'), h('small', { class: 'muted' }, 'TMS NO ' + (r.tms || '-') + (r.req_no && r.req_no !== r.tms ? ' · 신청번호 ' + r.req_no : '') + (r.mode ? ' · ' + r.mode : '')));
     }
     function poListCell(r) {
       var inLedger = r.ledger.map(function (x) { return x.po_no; });
@@ -225,7 +227,7 @@
       card.appendChild(App.table([
         { label: '받은 날', cls: 'nowrap', cell: function (r) { return r.received; } },
         { label: '포워더 · 제목', cls: 'clip', cell: function (r) { return h('span', null, h('strong', null, r.fields.forwarder || '-'), h('br'), h('small', { class: 'muted' }, r.subject || r.file)); } },
-        { label: 'B/L · TMS NO', cell: function (r) { return h('span', null, r.fields.bl || h('span', { class: 'badge danger' }, 'B/L 못 읽음'), h('br'), h('small', { class: 'muted' }, 'TMS ' + (r.fields.tms || '-') + (r.fields.req_no ? ' · ' + r.fields.req_no : ''))); } },
+        { label: 'B/L · TMS NO', cell: function (r) { return h('span', null, r.fields.bl || h('span', { class: 'badge danger' }, 'B/L 못 읽음'), L.anIsMblOnly(r) ? h('span', { class: 'badge warn', title: 'SRM은 HBL 기준입니다. 이 A/N에는 MBL만 있어 MBL로 대신 관리합니다.' }, 'HBL 없음') : null, h('br'), h('small', { class: 'muted' }, 'TMS ' + (r.fields.tms || '-') + (r.fields.req_no && r.fields.req_no !== r.fields.tms ? ' · ' + r.fields.req_no : ''))); } },
         { label: '선명 / 항차', cell: function (r) { return r.fields.vessel ? r.fields.vessel + (r.fields.voyage ? ' / ' + r.fields.voyage : '') : ''; } },
         { label: 'ETA', cls: 'nowrap', cell: function (r) { return r.fields.eta; } },
         { label: '대장 PO', cell: function (r) { return poCell(r); } },
@@ -260,13 +262,15 @@
         if (f.key === 'pos') note += ' · 여러 개는 쉼표로(' + L.anPoList(r.fields.pos).length + '건)';
         if (f.key === 'containers' && r.fields.containers) note += ' · ' + L.anContainerList(r.fields.containers).length + '개';
         if (f.key === 'local_ar' && L.anMoney(r.fields.local_ar)) { var mo = L.anMoney(r.fields.local_ar); note += ' · ' + (mo.ccy || '통화 없음') + ' ' + mo.amount; }
-        if (f.key === 'tms' && !r.fields.tms) note += ' · 칸 이름은 설정 「A/N 의 TMS NO 칸 이름」';
+        if (f.key === 'tms' && !r.fields.tms) note += ' · TMS NO = HIPRO 신청번호(칸 이름은 설정 「A/N 의 TMS NO 칸 이름」)';
+        if (f.key === 'bl' && L.anIsMblOnly(r)) note += ' · HBL이 없어 MBL을 넣었습니다. SRM은 HBL 기준이니 HBL을 알면 고쳐 주십시오';
         if (f.key === 'mode') note += ' · 참고용(비워도 됩니다)';
         return App.field(f.label, inp, note);
       });
       var content = h('div', null,
         h('p', { class: 'note' }, (r.from ? '보낸 사람 ' + r.from + ' · ' : '') + '받은 날 ' + (r.received || '-') + (r.file ? ' · ' + r.file : '')),
         r.notes && r.notes.length ? h('div', { class: 'alert warn' }, r.notes.join(' / ')) : null,
+        r.info && r.info.length ? h('p', { class: 'note muted' }, r.info.join(' / ')) : null,
         h('div', { class: 'form-grid' }, rows),
         h('details', { style: 'margin-top:12px' }, h('summary', null, '메일 원문 보기'), h('pre', { class: 'an-raw' }, (r.subject ? '제목: ' + r.subject + '\n\n' : '') + (r.text || ''))));
       App.dialog('A/N 확인·고치기' + (r.fields.bl ? ' — ' + r.fields.bl : ''), content, [

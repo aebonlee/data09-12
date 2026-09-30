@@ -21,7 +21,8 @@
       transit_eu: 90,
       transit_jpcn: 15,
       transit_in: 45,
-      an_tms_labels: 'TMS NO, TMS No., TMS 번호, TMS',   // A/N 에서 TMS NO 를 찾을 칸·라벨 이름(실물 3개에 없어 확인 중 — 신청번호와 같다면 「신청번호」)
+      an_tms_labels: 'TMS NO, TMS No., TMS 번호, TMS, 신청번호, HIPRO',   // A/N 에서 TMS NO 를 찾을 칸·라벨 이름(앞이 우선). 2026-09-30 확정: TMS NO = HIPRO 신청번호
+      an_cmp_incoterms: false, // 메일 표와 B/L 사본의 Incoterms 가 다를 때 참고 표시(2026-09-30 확정: 비교 불필요 — 기본 끔)
       sender_name: '',
       sender_email: '',
       sender_company: '',
@@ -1758,7 +1759,30 @@
   /* ── 실물 A/N 에 맞춘 도움 함수 (2026-09-29 밤) ─────────────────────────────── */
   // TMS NO 는 받은 실물 3개(해상 엑셀·B/L PDF·항공 메일) 어디에도 칸 이름이 없었습니다. 어느 칸인지 확인될 때까지
   // 설정 「TMS NO 칸 이름」(쉼표로 여러 개)으로 찾습니다. 신청번호와 같은 값이라면 거기에 「신청번호」를 적으면 됩니다.
-  var AN_TMS_DEFAULT = 'TMS NO, TMS No., TMS 번호, TMS';
+  // 2026-09-30 수강생 답: 「TMS 는 HIPRO 신청번호입니다」 → 기본값에 신청번호·HIPRO 를 넣어 TMS NO 칸이 따로 없으면
+  // 신청번호를 TMS NO 로 읽습니다(「TMS NO」라고 적힌 칸이 따로 오면 그 칸이 먼저). 바꿀 수 있게 설정에 그대로 둡니다.
+  var AN_TMS_DEFAULT = 'TMS NO, TMS No., TMS 번호, TMS, 신청번호, HIPRO';
+  var AN_TMS_OLD_DEFAULT = 'TMS NO, TMS No., TMS 번호, TMS';
+  // 저장된 설정이 예전 기본값 그대로면 새 기본값으로(사용자가 바꾼 값은 두고). 몇 번 돌려도 같음
+  function migrateSettings(st) {
+    if (!st) return 0;
+    if (st.an_tms_labels === AN_TMS_OLD_DEFAULT) { st.an_tms_labels = AN_TMS_DEFAULT; return 1; }
+    return 0;
+  }
+  // TMS NO 칸 이름에 신청번호(HIPRO) 이름이 들어 있으면, TMS NO 가 비어도 신청번호 값을 TMS NO 로 씁니다
+  var AN_REQ_KEYS = ['신청번호', '신청NO', 'HIPRO', 'HIPRONO'];
+  function anTmsFromReq(settings) {
+    return anTmsLabels(settings).some(function (l) { return AN_REQ_KEYS.indexOf(colKey(l)) >= 0; });
+  }
+  function anTmsFill(f, src, settings) {
+    if (f.tms || !f.req_no || !anTmsFromReq(settings)) return false;
+    f.tms = f.req_no; src.tms = '신청번호(HIPRO)와 같음 — ' + (src.req_no || f.req_no);
+    return true;
+  }
+  // HBL 없이 MBL 만 적힌 A/N 인가(SRM 은 HBL 기준 — 대신 MBL 로 관리하되 표시). 사람이 B/L 칸을 고쳤거나 MBL 칸을 채웠으면 아님
+  function anIsMblOnly(r) {
+    return !!(r && r.blIsMaster && !anKey(r.fields.mbl) && (!r.parsed || r.fields.bl === r.parsed.bl));
+  }
   function anTmsLabels(settings) {
     var v = settings && settings.an_tms_labels != null ? settings.an_tms_labels : AN_TMS_DEFAULT;
     return str(v).split(/\s*[,，]\s*/).map(str).filter(Boolean);
@@ -1895,6 +1919,7 @@
     });
     var rt = anFind('tms', lines, dayFirst, anTmsRules(db && db.settings));
     if (rt) { f.tms = rt.value; src.tms = rt.src; }
+    anTmsFill(f, src, db && db.settings);
     var ic = anIncoterms(text);
     if (ic) { f.incoterms = ic.value; src.incoterms = ic.src; }
     f.mode = anMode(str(mail.subject), text);
@@ -2121,11 +2146,15 @@
     return recs;
   }
   // 두 부분 기록 합치기: 앞(표)의 값을 두고 빈 칸만 뒤(첨부)에서 채움. 둘 다 있고 다르면 메모
-  var AN_CMP = { incoterms: 'Incoterms', eta: 'ETA', vessel: '선명·편명', req_no: '신청번호' };
-  function anMergePart(a, b, bName) {
+  // 2026-09-30 확정: Incoterms·컨테이너 형식은 비교하지 않아도 됨 → Incoterms 는 설정(an_cmp_incoterms, 기본 끔)을 켰을 때만
+  // 조용한 「참고」(info)로 남기고 확인 메모에는 넣지 않습니다. 컨테이너 형식은 원래 비교하지 않습니다(표 값을 씀).
+  var AN_CMP = { eta: 'ETA', vessel: '선명·편명', req_no: '신청번호' };
+  function anMergePart(a, b, bName, settings) {
+    a.info = a.info || [];
     Object.keys(b.f).forEach(function (k) {
       if (!a.f[k]) { a.f[k] = b.f[k]; a.src[k] = b.src[k]; }
       else if (AN_CMP[k] && colKey(a.f[k]) !== colKey(b.f[k])) a.notes.push(AN_CMP[k] + ' 「' + a.f[k] + '」 · ' + bName + ' 「' + b.f[k] + '」 다름 — 확인');
+      else if (k === 'incoterms' && settings && settings.an_cmp_incoterms && colKey(a.f[k]) !== colKey(b.f[k])) a.info.push('참고: Incoterms 「' + a.f[k] + '」 · ' + bName + ' 「' + b.f[k] + '」');
     });
     b.pos.forEach(function (x) { if (a.pos.indexOf(x) < 0) a.pos.push(x); });
     b.cntrs.forEach(function (c) {
@@ -2158,7 +2187,7 @@
     tables.forEach(function (t) {
       anRecordsFromGrid(t.rows, t.name, settings).forEach(function (p) {
         var ex = tab.filter(function (x) { return anPartKeyMatch(x, p); })[0];
-        if (ex) anMergePart(ex, p, t.name); else tab.push(p);
+        if (ex) anMergePart(ex, p, t.name, settings); else tab.push(p);
       });
     });
     var pdf = [];
@@ -2168,7 +2197,7 @@
       parts = tab;
       pdf.forEach(function (x) {
         var ex = parts.filter(function (a) { return anPartKeyMatch(a, x.p); })[0];
-        if (ex) anMergePart(ex, x.p, x.name); else parts.push(x.p);
+        if (ex) anMergePart(ex, x.p, x.name, settings); else parts.push(x.p);
       });
     } else if (pdf.length >= 2) {
       parts = pdf.map(function (x) { return x.p; });
@@ -2181,6 +2210,7 @@
         Object.keys(p.f).forEach(function (k) { if (!one.fields[k] && p.f[k]) { one.fields[k] = p.f[k]; one.src[k] = p.src[k]; } });
         var pl = anSplitPos(one.fields.pos); p.pos.forEach(function (x) { if (pl.indexOf(x) < 0) pl.push(x); }); one.fields.pos = pl.join(', ');
         if (!one.fields.containers && p.cntrs.length) { one.fields.containers = anContainerText(p.cntrs); one.src.containers = p.src.containers; }
+        anTmsFill(one.fields, one.src, settings);
         one.parsed = Object.assign({}, one.fields);
       }
       return [one];
@@ -2201,6 +2231,7 @@
       var blIsMaster = false;
       if (!f.bl && f.mbl) { f.bl = f.mbl; src.bl = src.mbl; delete f.mbl; delete src.mbl; blIsMaster = true; }   // HBL 이 없으면 MBL 로 관리
       if (!f.forwarder && fwd) { f.forwarder = fwd; src.forwarder = fwdSrc; }
+      anTmsFill(f, src, settings);
       f.mode = mode || p.mode || '';
       var fields = {};
       AN_FIELDS.forEach(function (x) { fields[x.key] = f[x.key] ? String(f[x.key]) : ''; });
@@ -2208,7 +2239,7 @@
       return {
         id: 'an' + (hashCode(str(mail.from) + '|' + str(mail.subject) + '|' + str(mail.dateTime) + '|' + str(opts.file) + '|' + str(mail.body).slice(0, 2000)) >>> 0).toString(36) + '-' + rowKey.toLowerCase(),
         file: str(opts.file), received: mail.date || opts.today || '', receivedAt: mail.dateTime || now,
-        from: str(mail.from), subject: str(mail.subject), fields: fields, parsed: Object.assign({}, fields), src: src, notes: p.notes,
+        from: str(mail.from), subject: str(mail.subject), fields: fields, parsed: Object.assign({}, fields), src: src, notes: p.notes, info: p.info || [],
         text: str(mail.body).slice(0, 8000), blIsMaster: blIsMaster
       };
     });
@@ -2225,8 +2256,9 @@
       if (k) g = find(function (x) { return x.key === k || x.alias.indexOf(k) >= 0; });
       if (!g && k && mk) g = find(function (x) { return x.key === mk && x.mblOnly; });
       if (!g && !k && rq) g = find(function (x) { return x.reqs.indexOf(rq) >= 0; });
-      if (!g) { g = { key: k, alias: [], recs: [], reqs: [], mblOnly: !!r.blIsMaster }; groups.push(g); }
-      else if (k && g.key === k && !r.blIsMaster) g.mblOnly = false;
+      var mo = anIsMblOnly(r);
+      if (!g) { g = { key: k, alias: [], recs: [], reqs: [], mblOnly: mo }; groups.push(g); }
+      else if (k && g.key === k && !mo) g.mblOnly = false;
       if (k && g.key && g.key !== k) { g.alias.push(g.key); g.key = k; g.mblOnly = false; }
       else if (k && !g.key) g.key = k;
       if (rq && g.reqs.indexOf(rq) < 0) g.reqs.push(rq);
@@ -2296,6 +2328,7 @@
     function regOf(keys) { for (var i = 0; i < keys.length; i++) if (regs[keys[i]]) return { key: keys[i], reg: regs[keys[i]] }; return null; }
     groups.forEach(function (g) {
       var m = anMatch(g, db);
+      var tmsReq = anTmsFromReq(db.settings);
       if (!m.list.length) unmatched.push({ group: g, unknown: m.unknown });
       if (!g.bl) return;   // B/L 을 못 읽은 A/N 은 대기 목록에 올리지 않고 메일 목록에서 고치게 함
       g.keys.forEach(function (k) { covered[k] = true; });
@@ -2304,7 +2337,7 @@
       var shown = g.poList.slice(); ledgerNos.forEach(function (no) { if (shown.indexOf(no) < 0) shown.push(no); });
       var vias = []; m.list.forEach(function (x) { if (vias.indexOf(x.via) < 0) vias.push(x.via); });
       rows.push({
-        key: key, regKey: rg ? rg.key : key, bl: g.bl, mbl: mg.mbl || '', tms: mg.tms || '', req_no: mg.req_no || '', pos: shown, po_no: shown.join(', '),
+        key: key, regKey: rg ? rg.key : key, bl: g.bl, mblOnly: !!g.mblOnly, mbl: mg.mbl || '', tms: mg.tms || (tmsReq ? mg.req_no || '' : ''), req_no: mg.req_no || '', pos: shown, po_no: shown.join(', '),
         ledger: m.list.map(function (x) { return { po_no: x.po.po_no, supplier_code: x.po.supplier_code, via: x.via }; }), unknownPos: m.unknown,
         supplier_code: m.list.length ? m.list[0].po.supplier_code : '', via: vias.join(', ') || '대장 연결 없음', source: 'mail',
         vessel: mg.vessel || '', voyage: mg.voyage || '', etd: mg.etd || '', eta: eta, pol: mg.pol || '', pod: mg.pod || '',
@@ -2327,7 +2360,7 @@
       var hx = hand[key], rg = regOf([key]), reg = rg ? rg.reg : null, p0 = hx.list[0];
       var eta = hx.list.map(function (p) { return p.eta || ''; }).filter(Boolean).sort().pop() || '';
       var nos = hx.list.map(function (p) { return p.po_no; });
-      rows.push({ key: key, regKey: key, bl: hx.bl, mbl: '', tms: '', req_no: '', pos: nos, po_no: nos.join(', '),
+      rows.push({ key: key, regKey: key, bl: hx.bl, mblOnly: false, mbl: '', tms: '', req_no: '', pos: nos, po_no: nos.join(', '),
         ledger: hx.list.map(function (p) { return { po_no: p.po_no, supplier_code: p.supplier_code, via: '대장' }; }), unknownPos: [],
         supplier_code: p0.supplier_code, via: '대장', source: 'ledger',
         vessel: '', voyage: '', etd: p0.etd || '', eta: eta, pol: '', pod: '', containers: [], cargo_type: '', mode: '', incoterms: '', local_ar: '', shipper: '', forwarder: '',
@@ -2435,7 +2468,9 @@
       o['대장 PO 연결'] = m.list.map(function (x) { return x.po.po_no + '(' + x.via + ')'; }).join(', ');
       o['대장에 없는 PO 번호'] = m.unknown.join(', ');
       o['고친 칸'] = AN_FIELDS.filter(function (f) { return r.parsed && r.fields[f.key] !== r.parsed[f.key]; }).map(function (f) { return f.label; }).join(', ');
+      o['B/L 구분'] = anIsMblOnly(r) ? 'MBL(HBL 없음 — 확인)' : 'HBL';
       o['확인 메모'] = (r.notes || []).join(' / ');
+      o['참고'] = (r.info || []).join(' / ');
       return o;
     });
   }
@@ -2445,7 +2480,7 @@
       r.ledger.forEach(function (x) { var s = supplierByCode(db.suppliers, x.supplier_code); var n = s ? s.name : x.supplier_code; if (n && names.indexOf(n) < 0) names.push(n); });
       var money = anMoney(r.local_ar);
       return {
-        'B/L(HBL)': r.bl, 'MBL': r.mbl, 'TMS NO': r.tms, '신청번호': r.req_no,
+        'B/L(HBL)': r.bl, 'B/L 구분': r.mblOnly ? 'MBL(HBL 없음 — 확인)' : 'HBL', 'MBL': r.mbl, 'TMS NO': r.tms, '신청번호': r.req_no,
         'PO 번호': r.po_no, 'PO 수': r.pos.length, '대장 PO 연결': r.ledger.map(function (x) { return x.po_no + '(' + x.via + ')'; }).join(', '),
         '대장에 없는 PO': r.unknownPos.join(', '), '업체': names.join(', '), 'SHIPPER': r.shipper,
         '운송 구분': r.mode, '화물형태': r.cargo_type, '컨테이너': anContainerText(r.containers), '컨테이너 수': r.containers.length,
@@ -2520,7 +2555,8 @@
     anAddMails: anAddMails, anSyncToPos: anSyncToPos, anRegister: anRegister, anUnregister: anUnregister, anConfirmEta: anConfirmEta,
     anHistory: anHistory, anRegDateOf: anRegDateOf, anMailRows: anMailRows, anQueueRows: anQueueRows, anHistoryRows: anHistoryRows, toCsv: toCsv,
     anSplitPos: anSplitPos, anContainerList: anContainerList, anContainerText: anContainerText, anMoney: anMoney, anIncoterms: anIncoterms, anMode: anMode,
-    anTmsLabels: anTmsLabels, AN_TMS_DEFAULT: AN_TMS_DEFAULT, anHtmlTables: anHtmlTables, anTextGrids: anTextGrids, anHeaderMap: anHeaderMap,
+    anTmsLabels: anTmsLabels, AN_TMS_DEFAULT: AN_TMS_DEFAULT, AN_TMS_OLD_DEFAULT: AN_TMS_OLD_DEFAULT, migrateSettings: migrateSettings,
+    anTmsFromReq: anTmsFromReq, anTmsFill: anTmsFill, anIsMblOnly: anIsMblOnly, anHtmlTables: anHtmlTables, anTextGrids: anTextGrids, anHeaderMap: anHeaderMap,
     anRecordsFromGrid: anRecordsFromGrid, anRecordsFromPages: anRecordsFromPages, anParseAll: anParseAll, anMigrateRegs: anMigrateRegs
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

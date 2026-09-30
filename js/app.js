@@ -401,6 +401,7 @@
     var db = App.db, st = db.settings;
     main.appendChild(App.pageHead('설정'));
     var f = {};
+    var cmpInc = h('input', { type: 'checkbox', checked: !!st.an_cmp_incoterms });
     function inp(k, type) { f[k] = h('input', { type: type || 'text', value: st[k], step: type === 'number' ? 'any' : null, min: type === 'number' ? 0 : null }); return f[k]; }
     main.appendChild(h('div', { class: 'card' }, h('h2', null, '보내는 사람(메일 서명)'),
       h('div', { class: 'form-grid' }, App.field('이름', inp('sender_name')), App.field('이메일', inp('sender_email')),
@@ -428,9 +429,11 @@
         App.field('시험 문장', rxTest),
         h('div', { class: 'span-all' }, h('div', { class: 'btn-row' }, h('button', { type: 'button', class: 'btn', onclick: testRx }, '규칙 시험')), rxOut),
         h('div', { class: 'span-all' }, App.field('OC 회신 판단 낱말(쉼표로 구분)', inp('oc_keywords'), '대문자 2~3자 낱말(OC 등)은 대소문자를 구분합니다.')),
-        h('div', { class: 'span-all' }, App.field('A/N 의 TMS NO 칸 이름(쉼표로 구분)', inp('an_tms_labels'), '도착 통지 표의 머리글이나 「라벨 : 값」의 라벨이 이 이름이면 TMS NO 로 읽습니다. 받은 실물에는 TMS NO 칸이 없었습니다 — 신청번호가 TMS NO 라면 「신청번호」를 적어 주십시오.')))));
+        h('div', { class: 'span-all' }, App.field('A/N 의 TMS NO 칸 이름(쉼표로 구분, 앞이 우선)', inp('an_tms_labels'), '도착 통지 표의 머리글이나 「라벨 : 값」의 라벨이 이 이름이면 TMS NO 로 읽습니다. TMS NO 는 HIPRO 신청번호이므로 기본값에 「신청번호, HIPRO」가 들어 있어, 「TMS NO」 칸이 따로 없으면 신청번호를 TMS NO 로 씁니다(2026-09-30 확인). 다른 번호를 쓰게 되면 여기서 바꿔 주십시오.')),
+        h('div', { class: 'span-all' }, h('label', { class: 'check' }, cmpInc, ' A/N 메일 표와 B/L 사본의 Incoterms 가 다르면 「참고」로 적기(기본 끔 — 비교하지 않아도 된다고 확인됨. 켜도 확인 메모·경고는 붙지 않습니다)')))));
     main.appendChild(h('div', { class: 'btn-row', style: 'margin-bottom:20px' }, h('button', { type: 'button', class: 'btn btn-primary', onclick: function () {
       Object.keys(f).forEach(function (k) { st[k] = f[k].type === 'number' ? Math.max(0, Number(f[k].value) || 0) : f[k].value.trim(); });
+      st.an_cmp_incoterms = cmpInc.checked;
       App.save(); App.toast('설정을 저장했습니다.');
     } }, '설정 저장')));
 

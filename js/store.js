@@ -21,6 +21,7 @@
     if (Array.isArray(p.suppliers)) db.suppliers = p.suppliers;
     if (Array.isArray(p.pos)) db.pos = p.pos;
     if (p.settings) Object.keys(db.settings).forEach(function (k) { if (p.settings[k] != null) db.settings[k] = p.settings[k]; });
+    if (L.migrateSettings) L.migrateSettings(db.settings);   // 예전 기본값 그대로인 설정만 새 기본값으로(2026-09-30 TMS NO = 신청번호)
     if (p.templates) Object.keys(db.templates).forEach(function (k) {
       var t = p.templates[k];
       if (t && typeof t.subject === 'string' && typeof t.body === 'string') db.templates[k] = { subject: t.subject, body: t.body };
