@@ -148,6 +148,9 @@ table.list td.nowrap { white-space: nowrap; }
 .pick-list .sub { display: block; color: var(--muted); font-size: .9rem; }
 .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #1b2430; color: #fff; padding: 12px 18px; border-radius: var(--radius); z-index: 100; max-width: calc(100vw - 32px); }
 .toast.error { background: var(--danger); }
+.file-error strong { margin-right: 8px; word-break: break-all; }   /* 읽지 못한 파일 알림(2026-10-01 문서보안·암호 파일) */
+.file-error p { margin: 6px 0 0; word-break: keep-all; overflow-wrap: break-word; }
+.pick-hint { margin-top: 6px; }
 
 /* ── 이 도구 전용 ─────────────────────────── */
 .menu-btn { display: none; }

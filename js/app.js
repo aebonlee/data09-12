@@ -118,11 +118,48 @@
   App.readText = function (file) {
     return App.readBuffer(file).then(function (b) { return new TextDecoder('utf-8').decode(b); });
   };
+  // 엑셀·CSV 바이트 → SheetJS 통합 문서. 파일 머리로 먼저 가려 문서보안(DRM)·암호 파일은 알기 쉬운 오류로 돌려줍니다(js/filecheck.js).
+  // CSV 는 UTF-8(BOM)·CP949 를 가려 풉니다. opts 는 XLSX.read 옵션(cellStyles 등)
+  App.sheetFromBytes = function (bytes, name, opts) {
+    if (!root.XLSX) throw new Error('엑셀 라이브러리(vendor/xlsx.full.min.js)를 불러오지 못했습니다.');
+    return root.OMFile.readSheet(root.XLSX, bytes, name, opts);
+  };
+  App.readSheetFile = function (file, opts) {
+    return App.readBuffer(file).then(function (buf) { return App.sheetFromBytes(new Uint8Array(buf), file.name, opts); });
+  };
+  // 읽지 못한 파일 알림: [{ name, error }] — 문서보안·암호 파일은 해결 방법이 길어 대화상자로, 그 밖은 알림으로
+  App.fileErrors = function (list, what) {
+    list = (list || []).filter(function (x) { return x && x.error; });
+    if (!list.length) return;
+    var special = list.filter(function (x) { return root.OMFile.isFileError(x.error) && x.error.code !== 'broken'; });
+    if (!special.length) {
+      App.toast((what || '파일') + '을 읽지 못했습니다: ' + list.map(function (x) { return x.name + '(' + x.error.message + ')'; }).join(', '), true);
+      return;
+    }
+    App.dialog('파일을 읽지 못했습니다', h('div', null,
+      list.map(function (x) {
+        return h('div', { class: 'alert warn file-error' }, h('strong', null, x.name), h('span', { class: 'badge danger' }, x.error.title || '읽기 실패'), h('p', null, x.error.message));
+      }),
+      h('p', { class: 'note' }, '함께 고른 다른 파일이 있으면 그것은 그대로 읽었습니다. CSV 로 저장하면 문서보안과 관계없이 올릴 수 있습니다(엑셀에서 열기 → 파일 → 다른 이름으로 저장 → 파일 형식 「CSV(쉼표로 분리)(*.csv)」).')));
+  };
+  // 「모든 파일에서 고르기」 — accept 거름 없이 고르는 두 번째 단추. 고른 파일을 원래 입력칸에 넘겨 같은 처리를 탑니다.
+  App.anyFileBtn = function (input, label) {
+    var alt = h('input', { type: 'file', style: 'display:none', multiple: input.multiple || null });
+    alt.addEventListener('change', function () {
+      if (!alt.files || !alt.files.length) return;
+      try { input.files = alt.files; } catch (e) { App.toast('이 브라우저에서는 이 단추를 쓸 수 없습니다. 파일을 끌어 놓거나 위 단추로 골라 주십시오.', true); return; }
+      input.dispatchEvent(new Event('change'));
+      alt.value = '';
+    });
+    return h('label', { class: 'btn btn-ghost', title: '파일 형식 거름 없이 모든 파일을 보여 줍니다' }, label || '모든 파일에서 고르기', alt);
+  };
+  App.pickHint = function () {
+    return h('p', { class: 'note pick-hint' }, '파일이 안 보이면 창 오른쪽 아래 형식을 \'모든 파일(*.*)\' 로 바꾸거나 \'모든 파일에서 고르기\' 를 눌러 주세요. 바탕화면·D드라이브 어디든 고를 수 있습니다.');
+  };
   // 엑셀·CSV → { sheetNames, grid(sheet) } (grid = 행 배열의 배열)
   App.readWorkbook = function (file) {
     if (!root.XLSX) return Promise.reject(new Error('엑셀 라이브러리(vendor/xlsx.full.min.js)를 불러오지 못했습니다.'));
-    return App.readBuffer(file).then(function (buf) {
-      var wb = XLSX.read(new Uint8Array(buf), { type: 'array', cellDates: false });
+    return App.readSheetFile(file).then(function (wb) {
       return {
         sheetNames: wb.SheetNames,
         grid: function (name) { return XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '', raw: true, blankrows: false }); }
@@ -159,11 +196,13 @@
     if (opts.note) box.appendChild(h('p', { class: 'note' }, opts.note));
     box.appendChild(h('div', { class: 'btn-row' },
       h('label', { class: 'btn' }, '엑셀·CSV 파일 선택', fileIn),
+      App.anyFileBtn(fileIn),
       opts.sample ? h('button', { type: 'button', class: 'btn', onclick: function () {
         st.wb = null; st.name = opts.sample.name; st.headers = opts.sample.headers; st.rows = opts.sample.rows; st.headerIdx = 0;
         st.mapping = guess(); draw();
       } }, opts.sample.label) : null));
     fileIn.style.display = 'none';
+    box.appendChild(App.pickHint());
     box.appendChild(body);
 
     function guess() {
@@ -183,7 +222,7 @@
         st.wb = wb; st.name = f.name; st.sheet = wb.sheetNames[0];
         st.headerIdx = guessHeaderRow(wb.grid(st.sheet));
         loadSheet(); st.mapping = guess(); draw();
-      }).catch(function (e) { App.toast('파일을 읽지 못했습니다: ' + e.message, true); });
+      }).catch(function (e) { App.fileErrors([{ name: f.name, error: e }]); });
       fileIn.value = '';
     });
 

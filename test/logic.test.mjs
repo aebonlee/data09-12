@@ -1223,4 +1223,75 @@ test('키가 있으면 Bearer, 그림이 있으면 image_url 로 함께, 주소 
   assert.equal(AI.readAnswer({ choices: [{ message: { content: '{"a":1}' } }] }), '{"a":1}');
 });
 
+console.log('\n엑셀 파일 머리 가리기 · CSV 글자 인코딩 (10-01 「D드라이브 엑셀 첨부가 안 됩니다」)');
+{
+  const F = require('../js/filecheck.js');
+  const X = require('../vendor/xlsx.full.min.js');
+  const fs = require('node:fs');
+  // 최소 OLE(CFB) 파일: 512바이트 머리 + 디렉터리 섹터 한 개(128바이트 항목 4칸)
+  const cfb = (names) => {
+    const b = new Uint8Array(1024);
+    b.set([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]);
+    names.forEach((n, i) => {
+      const off = 512 + i * 128, dv = new DataView(b.buffer);
+      for (let k = 0; k < n.length; k++) dv.setUint16(off + k * 2, n.charCodeAt(k), true);
+      dv.setUint16(off + 64, (n.length + 1) * 2, true);
+      b[off + 66] = i === 0 ? 5 : 2;   // 5 = 루트, 2 = 스트림
+    });
+    return b;
+  };
+  // 정해진 씨앗의 의사 난수 — 문서보안(DRM) 암호문 대신
+  const noise = (n, seed = 7) => { const b = new Uint8Array(n); let x = seed; for (let i = 0; i < n; i++) { x = (x * 1103515245 + 12345) >>> 0; b[i] = x >>> 24; } return b; };
+  test('PK 로 시작 → xlsx(zip), 읽을 수 있음', () => assert.deepEqual([F.classify(fs.readFileSync('samples/예시데이터_ContactList.xlsx')).kind, F.classify(new Uint8Array([0x50, 0x4B, 3, 4, 0])).ok], ['zip', true]));
+  test('CFB + Workbook → xls, 예시 .xls 도 cfb', () => {
+    assert.equal(F.classify(cfb(['Root Entry', 'Workbook'])).kind, 'cfb');
+    assert.equal(F.classify(cfb(['Root Entry', 'Book'])).kind, 'cfb');
+    assert.equal(F.classify(fs.readFileSync('samples/예시데이터_AN_부산_해상.xls')).kind, 'cfb');
+  });
+  test('CFB + EncryptedPackage·EncryptionInfo → 암호 걸린 Office(암호를 지워 달라는 안내)', () => {
+    const c = F.classify(cfb(['Root Entry', 'EncryptionInfo', 'EncryptedPackage']));
+    assert.deepEqual([c.kind, c.ok], ['encrypted', false]);
+    assert.match(c.message, /암호를 지운 뒤/);
+  });
+  test('CFB 인데 Workbook 이 없음(WordDocument) → 엑셀 시트 없음', () => assert.equal(F.classify(cfb(['Root Entry', 'WordDocument'])).kind, 'notSheet'));
+  test('난수 바이트(.xlsx 이름) → 문서보안(DRM), 안내 문구 그대로', () => {
+    const c = F.classify(noise(4096));
+    assert.deepEqual([c.kind, c.ok], ['drm', false]);
+    assert.ok(c.message.startsWith('이 파일은 회사 문서보안(DRM)으로 암호화되어 브라우저에서 읽을 수 없습니다.'));
+    assert.match(c.message, /CSV\(쉼표로 분리\)/);
+    const head = new Uint8Array([...new TextEncoder().encode('SCDSA002'), ...noise(600)]);   // 글자 머리 + 암호문
+    assert.equal(F.classify(head).kind, 'drm');
+  });
+  test('빈 파일 → empty, 글(CSV) → text', () => {
+    assert.equal(F.classify(new Uint8Array(0)).kind, 'empty');
+    assert.equal(F.classify(new TextEncoder().encode('a,b\r\n1,2\r\n')).kind, 'text');
+  });
+  test('readSheet: DRM·암호 파일은 code 가 붙은 오류, 엑셀 라이브러리로 넘기지 않음', () => {
+    assert.throws(() => F.readSheet(X, noise(4096), 'D드라이브.xlsx'), e => e.code === 'drm' && e.fileName === 'D드라이브.xlsx');
+    assert.throws(() => F.readSheet(X, cfb(['Root Entry', 'EncryptionInfo', 'EncryptedPackage']), 'a.xlsx'), e => e.code === 'encrypted');
+  });
+  test('readSheet: 실제 xlsx 예시는 그대로 읽힘', () => {
+    const wb = F.readSheet(X, fs.readFileSync('samples/예시데이터_ContactList.xlsx'), 'c.xlsx');
+    assert.equal(X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1 })[0][1], 'Supplier Name');
+  });
+  // 「품번,품명,수량」 을 CP949 로 적은 바이트: 품 C7B0 · 번 B9F8 · 명 B8ED · 수 BCF6 · 량 B7AE · 볼 BABC · 트 C6AE
+  const cp949 = new Uint8Array([0xC7, 0xB0, 0xB9, 0xF8, 0x2C, 0xC7, 0xB0, 0xB8, 0xED, 0x2C, 0xBC, 0xF6, 0xB7, 0xAE, 0x0D, 0x0A,
+    0x41, 0x42, 0x2D, 0x31, 0x2C, 0xBA, 0xBC, 0xC6, 0xAE, 0x2C, 0x31, 0x30, 0x0D, 0x0A]);
+  test('CSV 글자: UTF-8 로 풀면 깨지는 CP949 → EUC-KR 로 다시 풀어 「품번」', () => {
+    const d = F.decodeText(cp949);
+    assert.equal(d.encoding, 'cp949');
+    assert.ok(d.text.startsWith('품번,품명,수량'));
+  });
+  test('CSV 글자: BOM 붙은 UTF-8 · BOM 없는 UTF-8 · UTF-16LE', () => {
+    assert.deepEqual(F.decodeText(new Uint8Array([0xEF, 0xBB, 0xBF, ...new TextEncoder().encode('품번')])), { text: '품번', encoding: 'utf-8' });
+    assert.equal(F.decodeText(new TextEncoder().encode('수량')).text, '수량');
+    assert.deepEqual(F.decodeText(new Uint8Array([0xFF, 0xFE, 0x88, 0xD4])), { text: '품', encoding: 'utf-16le' });
+  });
+  test('readSheet: CP949 CSV → 시트, 한글 칸과 숫자', () => {
+    const wb = F.readSheet(X, cp949, '품목.csv');
+    assert.deepEqual(X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true }), [['품번', '품명', '수량'], ['AB-1', '볼트', 10]]);
+    assert.equal(wb._om.encoding, 'cp949');
+  });
+}
+
 console.log('\n' + passed + '개 통과' + (process.exitCode ? ' — 실패 있음' : ''));

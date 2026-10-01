@@ -6,8 +6,7 @@
   /* ── 메일 분류 · OC 회신 확인 ─────────────────────────────── */
   // OC 엑셀(첨부 또는 직접 올린 파일) → { name, oc }
   function readOcBytes(name, bytes) {
-    if (!root.XLSX) throw new Error('엑셀 라이브러리를 불러오지 못했습니다');
-    var wb = XLSX.read(bytes, { type: 'array', cellDates: false });
+    var wb = App.sheetFromBytes(bytes, name);   // 문서보안(DRM)·암호 파일은 알기 쉬운 오류로(2026-10-01)
     var grid = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '', raw: true, blankrows: false });
     return { name: name, oc: L.parseOcGrid(grid, name) };
   }
@@ -28,16 +27,24 @@
     var ocIn = h('input', { type: 'file', accept: '.xls,.xlsx,.xlsm,.csv', multiple: true, style: 'display:none' });
     ocIn.addEventListener('change', function () {
       var files = Array.prototype.slice.call(ocIn.files); ocIn.value = '';
-      Promise.all(files.map(function (f) { return App.readBuffer(f).then(function (b) { return readOcBytes(f.name, new Uint8Array(b)); }); }))
-        .then(function (list) { App.state.ocDocs = ocDocs.concat(list); App.render(); })
-        .catch(function (e) { App.toast('OC 파일을 읽지 못했습니다: ' + e.message, true); });
+      // 파일마다 따로 읽어, 못 읽은 파일이 있어도 나머지는 올립니다(2026-10-01)
+      Promise.all(files.map(function (f) {
+        return App.readBuffer(f).then(function (b) { return readOcBytes(f.name, new Uint8Array(b)); })
+          .catch(function (e) { return { name: f.name, error: e }; });
+      })).then(function (list) {
+        var ok = list.filter(function (x) { return !x.error; });
+        if (ok.length) { App.state.ocDocs = ocDocs.concat(ok); App.render(); }
+        App.fileErrors(list.filter(function (x) { return x.error; }), 'OC 파일');
+      });
     });
     main.appendChild(h('div', { class: 'card' },
       h('div', { class: 'btn-row' },
         h('label', { class: 'btn btn-primary' }, '.eml 파일 선택(여러 개)', fileIn),
         h('label', { class: 'btn' }, 'OC 엑셀만 올리기', ocIn),
+        App.anyFileBtn(ocIn, 'OC 엑셀 — 모든 파일에서 고르기'),
         h('button', { type: 'button', class: 'btn', onclick: sample }, '예시 메일로 해 보기'),
         mails.length || ocDocs.length ? h('button', { type: 'button', class: 'btn btn-ghost', onclick: function () { App.state.mails = []; App.state.ocDocs = []; App.render(); } }, '목록 비우기') : null),
+      App.pickHint(),
       h('p', { class: 'note' }, 'Outlook 데스크톱에서 메일을 끌어 폴더에 놓으면 .msg로 저장되는 경우가 있습니다. 이 도구는 .eml만 읽습니다(새 Outlook·웹 Outlook의 「다운로드」는 .eml). OC 수령일은 메일 받은 날(이 PC 시간대 기준)입니다.')));
     if (!mails.length && !ocDocs.length) return;
 
@@ -158,18 +165,19 @@
     function fmt(v) { return v == null || v === '' ? '-' : String(v); }
 
     function add(list) {
-      var docs = [];
+      var docs = [], bad = [];
       var parsed = list.map(function (x) {
         var mail = L.parseEml(x.bytes);
         mail.attachments.filter(L.isOcAttachment).forEach(function (a) {
           if (!/\.(xlsx?|xlsm|csv)$/i.test(a.name)) return;
-          try { docs.push(readOcBytes(a.name, a.bytes)); } catch (e) { App.toast(a.name + ' 을(를) 읽지 못했습니다: ' + e.message, true); }
+          try { docs.push(readOcBytes(a.name, a.bytes)); } catch (e) { bad.push({ name: a.name, error: e }); }
         });
         return { name: x.name, bytes: x.bytes, mail: mail };
       });
       App.state.mails = mails.concat(parsed);
       App.state.ocDocs = ocDocs.concat(docs);
       App.render();
+      App.fileErrors(bad, '첨부 OC');
     }
     function sample() {
       var list = S.mails(today).map(function (m) { return { name: m.name, bytes: L.utf8(m.text) }; });
@@ -404,25 +412,27 @@
       '오늘 기준으로 아직 선적되지 않은 줄(Undispatched)만 봅니다. Abnormal(Promise Date가 지났는데 INV#가 없는 줄)과 Dispatched는 뺍니다. ',
       '수량 확인은 거른 미선적 줄의 수량 합만 대장의 PO 수량(초기 발주)·OC 수량과 비교합니다. 이미 출고된 수량은 참고로만 보여 줍니다. 일치하는 묶음만 처음부터 골라 두고, 부족·초과·수량 모름은 확인한 뒤 직접 골라 반영해 주세요. ',
       '「변경 확인 필요」는 파일의 노란 칠, 또는 지난주 파일과 비교해 Promise Date·수량이 달라진 줄입니다. 지난주 파일을 함께 올리면 칠이 빠진 변경도 잡습니다.'));
-    var prevIn = h('input', { type: 'file', accept: '.xlsx,.xlsm,.xls', style: 'display:none' });
+    var prevIn = h('input', { type: 'file', accept: '.xlsx,.xlsm,.xls,.csv', style: 'display:none' });
     prevIn.addEventListener('change', function () {
       var f = prevIn.files[0]; prevIn.value = ''; if (!f) return;
       App.readBuffer(f).then(function (buf) {
-        var wb = XLSX.read(new Uint8Array(buf), { type: 'array', cellStyles: false, cellDates: false });
+        var wb = App.sheetFromBytes(new Uint8Array(buf), f.name, { cellStyles: false });
         st.prevWb = wb; st.prevName = f.name; st.prevSheet = pickSheet(wb.SheetNames); loadPrev(); App.render();
-      }).catch(function (e) { App.toast('지난주 파일을 읽지 못했습니다: ' + e.message, true); });
+      }).catch(function (e) { App.fileErrors([{ name: f.name, error: e }], '지난주 파일'); });
     });
-    var fileIn = h('input', { type: 'file', accept: '.xlsx,.xlsm,.xls', style: 'display:none' });
+    var fileIn = h('input', { type: 'file', accept: '.xlsx,.xlsm,.xls,.csv', style: 'display:none' });
     fileIn.addEventListener('change', function () {
       var f = fileIn.files[0]; fileIn.value = ''; if (!f) return;
       App.readBuffer(f).then(function (buf) {
-        var wb = XLSX.read(new Uint8Array(buf), { type: 'array', cellStyles: true, cellDates: false });
+        var wb = App.sheetFromBytes(new Uint8Array(buf), f.name, { cellStyles: true });   // CSV 는 노란 칠이 없어 지난주 비교로만 변경을 잡습니다
         st.wb = wb; st.name = f.name; st.sample = false; st.asOf = App.today(); st.sheet = pickSheet(wb.SheetNames); load(); App.render();
-      }).catch(function (e) { App.toast('파일을 읽지 못했습니다: ' + e.message, true); });
+      }).catch(function (e) { App.fileErrors([{ name: f.name, error: e }]); });
     });
     main.appendChild(h('div', { class: 'card' }, h('div', { class: 'btn-row' },
       h('label', { class: 'btn btn-primary' }, '이번 주 오더 현황 엑셀 선택', fileIn),
+      App.anyFileBtn(fileIn, '이번 주 — 모든 파일에서 고르기'),
       h('label', { class: 'btn' }, '지난주 파일 선택(비교용)', prevIn),
+      App.anyFileBtn(prevIn, '지난주 — 모든 파일에서 고르기'),
       h('button', { type: 'button', class: 'btn', onclick: function () {
         ensureFox(); var g = S.cumGrid(), pg = S.cumPrevGrid();
         st.wb = null; st.name = '예시데이터_Integrated_Order_Status_wk38_분석'; st.sample = true; st.sheet = 'wk38 분석(예시)';
@@ -432,6 +442,7 @@
         st.asOf = S.CUM_AS_OF;   // 예시 파일을 저장한 날 기준
         App.render();
       } }, '예시 파일로 해 보기')),
+      App.pickHint(),
       h('p', { class: 'note' }, '지난주 파일은 선택 사항입니다. 같은 파일 안의 지난주 시트를 쓰려면 같은 파일을 한 번 더 고르고 시트를 바꿔 주세요.')));
     if (!st.rows) return;
 

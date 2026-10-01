@@ -9,20 +9,20 @@
 
   // 파일 목록 → A/N 기록(B/L 마다 한 건). .eml 은 본문 표와 첨부(엑셀·PDF)를 함께 읽고,
   // 엑셀(.xls·.xlsx)·PDF(B/L·AWB 사본)·HTML 은 파일 하나를 그대로 올려도 읽습니다(2026-09-29 밤, 실물 양식).
-  function sheetGrid(bytes) {
+  function sheetGrid(bytes, name) {
     if (!root.XLSX) throw new Error('엑셀 라이브러리를 불러오지 못했습니다');
-    var wb = XLSX.read(bytes, { type: 'array', cellDates: false });
+    var wb = App.sheetFromBytes(bytes, name);   // 문서보안(DRM)·암호 파일은 여기서 알기 쉬운 오류로(2026-10-01)
     return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '', raw: true, blankrows: false });
   }
   function extrasOf(atts) {
     var extra = { grids: [], pdfs: [], errors: [] }, jobs = [];
     atts.forEach(function (a) {
       if (a.inline && !/\.(xlsx?|pdf)$/i.test(a.name)) return;
-      if (/\.(xlsx?|xlsm|csv)$/i.test(a.name)) {
-        try { extra.grids.push({ name: '첨부 ' + a.name, rows: sheetGrid(a.bytes) }); } catch (e) { extra.errors.push(a.name + '(' + e.message + ')'); }
+      if (a.sheet || /\.(xlsx?|xlsm|csv)$/i.test(a.name)) {
+        try { extra.grids.push({ name: '첨부 ' + a.name, rows: sheetGrid(a.bytes, a.name) }); } catch (e) { extra.errors.push({ name: a.name, error: e }); }
       } else if (/\.pdf$/i.test(a.name) && App.pdfPages) {
         jobs.push(App.pdfPages(a.bytes, 30).then(function (pages) { extra.pdfs.push({ name: '첨부 ' + a.name, pages: pages }); },
-          function (e) { extra.errors.push(a.name + '(글을 읽지 못함: ' + e.message + ')'); }));
+          function (e) { extra.errors.push({ name: a.name, error: new Error('글을 읽지 못함: ' + e.message) }); }));
       }
     });
     return Promise.all(jobs).then(function () { return extra; });
@@ -31,20 +31,24 @@
     var db = App.db, today = App.today(), skipped = [], errors = [];
     var jobs = files.map(function (f) {
       if (/\.msg$/i.test(f.name)) { skipped.push(f.name); return Promise.resolve([]); }
+      // 한 파일이 못 읽혀도 함께 고른 다른 파일은 읽습니다(2026-10-01)
       return App.readBuffer(f).then(function (buf) {
         var bytes = new Uint8Array(buf), opts = { file: f.name, today: today, dayFirst: App.state.anDayFirst };
         var blank = { from: '', fromAddr: '', subject: '', date: '', dateTime: '', body: '', attachments: [] };
-        if (/\.(xlsx?|xlsm|csv)$/i.test(f.name)) return extrasOf([{ name: f.name, bytes: bytes }]).then(function (x) { errors = errors.concat(x.errors); return L.anParseAll(blank, db, opts, x); });
+        // 확장자가 바뀐 엑셀(.xlsx_ 등)도 파일 머리로 가립니다. 문서보안(DRM)·암호 파일은 깨진 글로 읽지 않고 알립니다(2026-10-01)
+        var kind = /\.pdf$/i.test(f.name) ? 'pdf' : root.OMFile.classify(bytes);
+        if (kind !== 'pdf' && !kind.ok) throw root.OMFile.fileError(kind.code, f.name);
+        if (/\.(xlsx?|xlsm|csv)$/i.test(f.name) || kind.kind === 'zip' || kind.kind === 'cfb') return extrasOf([{ name: f.name, bytes: bytes, sheet: true }]).then(function (x) { errors = errors.concat(x.errors); return L.anParseAll(blank, db, opts, x); });
         if (/\.pdf$/i.test(f.name)) return extrasOf([{ name: f.name, bytes: bytes }]).then(function (x) { errors = errors.concat(x.errors); return L.anParseAll(blank, db, opts, x); });
-        var text = new TextDecoder('utf-8').decode(bytes);
+        var text = root.OMFile.decodeText(bytes).text;   // UTF-8 이 아니면 CP949(EUC-KR)로
         if (/\.html?$/i.test(f.name)) return L.anParseAll(Object.assign({}, blank, { html: text, body: text.replace(/<[^>]+>/g, ' ') }), db, opts, {});
         var mail = /\.(eml|mht|mhtml)$/i.test(f.name) || /^[\w\-]+:/.test(text.slice(0, 200)) ? L.parseEml(bytes) : L.anMailFromText(text);
         return extrasOf(mail.attachments || []).then(function (x) { errors = errors.concat(x.errors); return L.anParseAll(mail, db, opts, x); });
-      });
+      }).catch(function (e) { errors.push({ name: f.name, error: e }); return []; });
     });
     return Promise.all(jobs).then(function (lists) {
       if (skipped.length) App.toast('Outlook .msg 는 읽지 못합니다(' + skipped.join(', ') + '). .eml 로 저장하거나 본문을 붙여넣어 주십시오.', true);
-      else if (errors.length) App.toast('첨부 일부를 읽지 못했습니다: ' + errors.join(', '), true);
+      if (errors.length) App.fileErrors(errors, '파일 일부');
       return [].concat.apply([], lists);
     });
   }
@@ -94,7 +98,7 @@
     main.appendChild(h('p', null, '포워더가 보내는 A/N(도착일정통지) 메일을 올리면 B/L(HBL, 없으면 MBL)·TMS NO(= HIPRO 신청번호)·PO 목록·컨테이너·화물형태·입항일(ETA)·Incoterms·Local AR 등을 읽어 대장의 PO에 붙입니다. 메일에 적힌 B/L마다 한 줄로 「항차등록 대기」에 모으고, 등록을 마치면 날짜와 함께 「등록 완료」로 표시합니다. B/L 한 건에 PO가 여럿이면 한 줄에 PO 목록으로 보여 드립니다. 같은 B/L의 새 A/N에서 ETA가 바뀌면 이전 → 이후로 알려 드립니다.'));
 
     // ── 올리기: 끌어 놓기 · 파일 선택 · 붙여넣기 ──
-    var fileIn = h('input', { type: 'file', accept: '.eml,.txt,.msg,.xls,.xlsx,.pdf,.htm,.html,message/rfc822,text/plain', multiple: true, style: 'display:none' });
+    var fileIn = h('input', { type: 'file', accept: '.eml,.txt,.msg,.xls,.xlsx,.xlsm,.csv,.pdf,.htm,.html,message/rfc822,text/plain', multiple: true, style: 'display:none' });
     fileIn.addEventListener('change', function () { var fs = Array.prototype.slice.call(fileIn.files); fileIn.value = ''; readFiles(fs).then(addRecs); });
     var drop = h('div', { class: 'drop-zone', tabindex: '0', role: 'button', 'aria-label': 'A/N 메일 파일을 여기에 끌어 놓거나 눌러서 고르기',
       onclick: function () { fileIn.click(); }, onkeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileIn.click(); } } },
@@ -110,7 +114,8 @@
     var dayFirst = h('input', { type: 'checkbox', checked: !!st.anDayFirst, onchange: function (e) { st.anDayFirst = e.target.checked; } });
     main.appendChild(h('div', { class: 'card' }, h('h2', null, 'A/N 메일 올리기'), drop,
       h('div', { class: 'btn-row', style: 'margin-top:12px' },
-        h('label', { class: 'btn btn-primary' }, '파일 선택(.eml·.xls·.pdf, 여러 개)', fileIn),
+        h('label', { class: 'btn btn-primary' }, '파일 선택(.eml·.xls·.csv·.pdf, 여러 개)', fileIn),
+        App.anyFileBtn(fileIn),
         h('button', { type: 'button', class: 'btn', onclick: function () { addRecs(sampleRecs()); } }, '예시 A/N으로 해 보기'),
         q.groups.length ? h('button', { type: 'button', class: 'btn btn-ghost', onclick: function () {
           App.dialog('A/N 메일 목록 비우기', h('p', null, '읽어 둔 A/N 메일을 모두 지웁니다. 항차등록 완료 표시와 이력, 대장에 이미 넣은 B/L·ETA는 그대로 둡니다.'),
@@ -124,6 +129,7 @@
             addRecs(L.anParseAll(mail, db, { file: '붙여넣기 ' + today, today: today, dayFirst: st.anDayFirst }, {}));
           } }, '붙여넣은 글 읽기'),
           h('label', { class: 'check' }, dayFirst, '12/10/2026 같은 날짜를 일/월/연도 순서로 읽기'))),
+      App.pickHint(),
       h('p', { class: 'note' }, '「도착일정통지」 메일은 본문 표 한 줄(신청번호 한 건)을 B/L 한 건으로 읽습니다. PO LIST의 여러 PO(쉼표·전각 쉼표·줄바꿈·붙어 있는 번호)와 여러 컨테이너(화물형태·번호·형식 되풀이)를 나눕니다. 메일에 붙은 엑셀(.xls)·B/L 사본 PDF도 함께 읽어 같은 B/L의 빈 칸(항차·출항일 등)을 채웁니다. 해상·항공은 참고로만 표시합니다. Outlook 데스크톱에서 끌어 놓으면 .msg가 되는 경우가 있으니 .eml로 저장해 주십시오. 받은 날은 메일의 보낸 시각(이 PC 시간대 기준), 파일·붙여넣은 글은 오늘입니다.')));
 
     var groups = q.groups;
